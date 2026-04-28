@@ -52,6 +52,35 @@ No LLM bundled. Bring your own agent (Cursor, Claude Code, any coding AI).
 
 ---
 
+## Usage
+
+```bash
+# 1. Scan the repo — checks open issues first; returns ecosystem facts if clear
+harness scan ./my-repo --repo owner/repo
+
+# 2. Inspect the repo, decide a goal, open a tracking issue
+harness open "Fix all TypeScript strict errors" \
+  --repo owner/repo \
+  --workdir ./my-repo
+
+# 3. Read prior context before starting (skip on first attempt)
+harness context <issue>
+
+# 4. Do the work — edit files, run commands, sanity-check locally
+
+# 5. Verify assertions
+harness check <issue>
+
+# 6. Log what you did, push, then close
+harness log <issue> "Fixed 12 type errors across src/. tsc clean."
+git add -A && git commit -m "fix: resolve TypeScript strict errors" && git push
+harness done <issue> 1
+```
+
+See [SKILL.md](./SKILL.md) for the full autonomous loop guide.
+
+---
+
 ## Install
 
 ```bash

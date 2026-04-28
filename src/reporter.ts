@@ -60,7 +60,7 @@ export function parseRepo(slug: string): { owner: string; repo: string } {
   return { owner, repo: name };
 }
 
-async function safe<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
+export async function safe<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn();
   } catch (err) {
@@ -114,7 +114,7 @@ export function buildIssueBody(goal: string, config: HarnessConfig): string {
 // Label bootstrap
 // ---------------------------------------------------------------------------
 
-async function ensureLabels(octokit: Octokit, owner: string, repo: string): Promise<void> {
+export async function ensureLabels(octokit: Octokit, owner: string, repo: string): Promise<void> {
   for (const l of Object.values(LABELS)) {
     await safe(`ensureLabel:${l.name}`, () =>
       octokit.issues.createLabel({ owner, repo, name: l.name, color: l.color, description: l.description })
@@ -133,7 +133,7 @@ async function ensureLabels(octokit: Octokit, owner: string, repo: string): Prom
 // Deduplication — return existing open issue if goal already tracked
 // ---------------------------------------------------------------------------
 
-async function findExisting(
+export async function findExisting(
   octokit: Octokit,
   owner: string,
   repo: string,

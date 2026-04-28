@@ -29,6 +29,7 @@ process.on('warning', (w) => {
   if (w.name === 'DeprecationWarning' && w.message.includes('@octokit')) return;
   process.stderr.write(`${w.name}: ${w.message}\n`);
 });
+
 import { parseArgs, flag, flags } from './args.js';
 import { check, formatCheckResult } from './checker.js';
 import {
@@ -47,18 +48,18 @@ const SKILL_DEST = path.join(os.homedir(), '.cursor', 'skills', 'harness-arena',
 // Helpers
 // ---------------------------------------------------------------------------
 
-function die(msg: string): never {
+export function die(msg: string): never {
   process.stderr.write(`harness: ${msg}\n`);
   process.exit(1) as never;
   throw new Error('unreachable');
 }
 
-function out(data: unknown): void {
+export function out(data: unknown): void {
   process.stdout.write(JSON.stringify(data, null, 2) + '\n');
 }
 
-function getRepo(flag?: string): string {
-  const r = flag ?? process.env['GITHUB_REPO'];
+export function getRepo(flagValue?: string): string {
+  const r = flagValue ?? process.env['GITHUB_REPO'];
   if (!r) die('no repo — pass --repo owner/repo or set GITHUB_REPO env var');
   return r;
 }
@@ -71,14 +72,12 @@ function installSkill(): void {
   } catch { /* non-fatal */ }
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
 
-function printHelp(): void {
-  process.stdout.write(`
+export function helpText(): string {
+  return `
 harness — autonomous repo improvement loop coordinator
 
 GitHub Issues are the single source of truth. No local task files needed.
@@ -86,9 +85,13 @@ Any agent on any machine picks up work by issue number alone.
 
 COMMANDS
 
-  harness scan <workdir> [--repo owner/repo] [--goal "custom goal"]
-    Detect ecosystem, generate assertions, open a tracking issue.
-    Prints { number, url, ecosystem, goal }.
+  harness scan <workdir> [--repo owner/repo] [--goal "..."]
+    First checks GitHub for open harness issues. If any exist, returns them
+    with a resume hint so you don't duplicate work.
+    If the slate is clean, detects ecosystem and returns facts for the agent
+    to inspect the repo, form recommendations, and ask the user for a goal.
+    With --goal: opens a tracking issue immediately.
+    Prints { existing, next }  OR  { ecosystem, config, next }  OR  { number, url }.
 
   harness open "<goal>" --repo owner/repo [--workdir path] [--assert "cmd"]...
     Open a tracking issue with inline assertions. Deduplicates automatically.
@@ -126,49 +129,37 @@ ENVIRONMENT
 
 LOOP PATTERN  (see SKILL.md for the full guide)
 
-  harness scan ./my-repo --repo owner/repo          # auto-detect + open issue
-  harness context <issue>                           # read prior attempts
+  harness scan ./my-repo --repo owner/repo          # check open issues; returns ecosystem facts if clear
+  # inspect repo, ask user for goal, then:
+  harness open "<goal>" --repo owner/repo --workdir /path  # open tracking issue
+  harness context <issue>                                   # read prior attempts before starting
   # ... do the work ...
   harness check <issue>                             # verify assertions
   harness log <issue> "what I did and what happened"
+  git add -A && git commit -m "..." && git push     # push first
   harness done <issue> 1   OR   harness fail <issue> 3
-`);
+`;
 }
 
 // ---------------------------------------------------------------------------
-// Entry
+// Command handlers — each returns an exit code; process.exit in dispatcher
 // ---------------------------------------------------------------------------
 
-installSkill();
-
-const [,, command, ...rest] = process.argv;
-const args = parseArgs(rest);
-
-if (!command || command === 'help' || command === '--help' || command === '-h') {
-  printHelp();
-  process.exit(0);
-}
-
-// --- scan -------------------------------------------------------------------
-if (command === 'scan') {
+export async function cmdScan(args: Args): Promise<number> {
   const workdir  = args.positional[0] ?? '.';
   const goalFlag = flag(args, 'goal');
-  const repoFlag = flag(args, 'repo');
-  const repo     = getRepo(repoFlag);
+  const repo     = getRepo(flag(args, 'repo'));
 
-  // Check for existing open issues first — avoid duplicating work.
   const existing = (await listIssues(repo)).filter((i) => i.status === 'running');
   if (existing.length > 0) {
     process.stderr.write(`[harness] ${existing.length} open issue(s) already in progress — resume before starting new work\n`);
     out({ existing, next: `harness context <issue-number> --repo ${repo}` });
-    process.exit(0);
+    return 0;
   }
 
   const result = scan(workdir, goalFlag);
   if (!result) die(`could not detect ecosystem in ${path.resolve(workdir)}`);
 
-  // Always print scan facts. If --goal was given, open the issue immediately.
-  // Without --goal, let the agent decide the goal and call `harness open`.
   if (goalFlag) {
     const handle = await openIssue(goalFlag, result.config, repo);
     if (!handle) die('failed to open GitHub issue');
@@ -180,11 +171,10 @@ if (command === 'scan') {
       next:      `inspect the repo, form 2-4 specific improvement recommendations, ask the user which to pursue, then: harness open "<chosen goal>" --repo ${repo} --workdir ${result.config.workdir ?? path.resolve(workdir)}`,
     });
   }
-  process.exit(0);
+  return 0;
 }
 
-// --- open -------------------------------------------------------------------
-if (command === 'open') {
+export async function cmdOpen(args: Args): Promise<number> {
   const goal    = args.positional[0];
   const repo    = getRepo(flag(args, 'repo'));
   const workdir = flag(args, 'workdir') ? path.resolve(flag(args, 'workdir')!) : undefined;
@@ -203,13 +193,12 @@ if (command === 'open') {
   if (!handle) die('failed to open GitHub issue');
 
   out(handle);
-  process.exit(0);
+  return 0;
 }
 
-// --- check ------------------------------------------------------------------
-if (command === 'check') {
-  const issueNumber = args.positional[0];
-  const repo        = getRepo(flag(args, 'repo'));
+export async function cmdCheck(args: Args): Promise<number> {
+  const issueNumber    = args.positional[0];
+  const repo           = getRepo(flag(args, 'repo'));
   const workdirOverride = flag(args, 'workdir');
 
   if (!issueNumber) die('check requires an issue number\n  Usage: harness check <number>');
@@ -221,11 +210,10 @@ if (command === 'check') {
   const result = await check(ctx.config, workdirOverride);
   process.stdout.write(formatCheckResult(result) + '\n');
   out(result);
-  process.exit(result.ok ? 0 : 1);
+  return result.ok ? 0 : 1;
 }
 
-// --- log --------------------------------------------------------------------
-if (command === 'log') {
+export async function cmdLog(args: Args): Promise<number> {
   const issueNumber = args.positional[0];
   const message     = args.positional[1];
   const repo        = getRepo(flag(args, 'repo'));
@@ -233,11 +221,10 @@ if (command === 'log') {
   if (!issueNumber || !message) die('log requires issue number and message\n  Usage: harness log <number> "<message>"');
 
   await addComment(repo, issueNumber, message);
-  process.exit(0);
+  return 0;
 }
 
-// --- done -------------------------------------------------------------------
-if (command === 'done') {
+export async function cmdDone(args: Args): Promise<number> {
   const issueNumber = args.positional[0];
   const attempts    = Number(args.positional[1] ?? '1');
   const repo        = getRepo(flag(args, 'repo'));
@@ -246,11 +233,10 @@ if (command === 'done') {
 
   await closeAsSucceeded(repo, issueNumber, attempts);
   process.stdout.write(`[harness] Issue #${issueNumber} closed as succeeded.\n`);
-  process.exit(0);
+  return 0;
 }
 
-// --- fail -------------------------------------------------------------------
-if (command === 'fail') {
+export async function cmdFail(args: Args): Promise<number> {
   const issueNumber = args.positional[0];
   const attempts    = Number(args.positional[1] ?? '1');
   const repo        = getRepo(flag(args, 'repo'));
@@ -259,11 +245,10 @@ if (command === 'fail') {
 
   await markAsFailed(repo, issueNumber, attempts);
   process.stdout.write(`[harness] Issue #${issueNumber} marked as failed.\n`);
-  process.exit(0);
+  return 0;
 }
 
-// --- context ----------------------------------------------------------------
-if (command === 'context') {
+export async function cmdContext(args: Args): Promise<number> {
   const issueNumber = args.positional[0];
   const repo        = getRepo(flag(args, 'repo'));
 
@@ -273,14 +258,13 @@ if (command === 'context') {
   if (!ctx) die(`could not fetch issue #${issueNumber}`);
 
   out(ctx);
-  process.exit(0);
+  return 0;
 }
 
-// --- history ----------------------------------------------------------------
-if (command === 'history') {
-  const repo = getRepo(flag(args, 'repo'));
-
+export async function cmdHistory(args: Args): Promise<number> {
+  const repo   = getRepo(flag(args, 'repo'));
   const issues = await listIssues(repo);
+
   if (issues.length === 0) {
     process.stdout.write('No harness issues found.\n');
   } else {
@@ -291,7 +275,39 @@ if (command === 'history') {
     process.stdout.write(`\n${issues.length} issue(s)\n`);
   }
   out(issues);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher
+// ---------------------------------------------------------------------------
+
+installSkill();
+
+const [,, command, ...rest] = process.argv;
+const args = parseArgs(rest);
+
+const COMMANDS: Record<string, (a: Args) => Promise<number>> = {
+  scan:    cmdScan,
+  open:    cmdOpen,
+  check:   cmdCheck,
+  log:     cmdLog,
+  done:    cmdDone,
+  fail:    cmdFail,
+  context: cmdContext,
+  history: cmdHistory,
+};
+
+if (!command || command === 'help' || command === '--help' || command === '-h') {
+  process.stdout.write(helpText());
   process.exit(0);
 }
 
-die(`unknown command "${command}". Run "harness help" for usage.`);
+const handler = COMMANDS[command];
+if (!handler) {
+  process.stderr.write(`harness: unknown command "${command}"\n`);
+  process.stderr.write('Run "harness help" for usage.\n');
+  process.exit(1);
+}
+
+process.exit(await handler(args));
