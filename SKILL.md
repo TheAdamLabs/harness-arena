@@ -112,22 +112,42 @@ harness context 14
 # → { goal, config, status, attempts: [ "Attempt 1: ...", "Attempt 2: ..." ] }
 ```
 
-### Step 4 — Do the actual work
+### Step 4 — preflight: gather context before touching anything
 
-This is entirely your responsibility. Read files, edit code, run commands:
+Before editing a single file, read the relevant code and run checks dry:
 
 ```bash
+# Read the files your assertions will touch
 cat /path/to/repo/src/api.ts
-# understand what needs changing
 
-# edit the file using your tools
+# Verify the assertions you're about to write will actually run
+cd /path/to/repo && npx tsc --noEmit        # does tsc work at all?
+cd /path/to/repo && npm test                # does test suite pass currently?
+cd /path/to/repo && npx eslint . 2>&1 | head -20  # any pre-existing lint errors?
+
+# Check peer deps before writing tool-specific assertions
+node -e "require('@eslint/js')" 2>&1        # installed?
+```
+
+Common traps to avoid:
+- **Fragile assertions** — don't assert against a live server or port that isn't running. Use file/output checks instead.
+- **Unknown pre-existing failures** — run assertions once before doing any work to establish a baseline. If they already fail, fix that first or note it in `harness log`.
+- **Missing peer deps** — if an assertion runs a tool (eslint, tsc, pytest), verify all its deps are installed before writing the assertion.
+- **Too-narrow `old_string` in edits** — when replacing text in config files with repeated structure (JSON keys, YAML blocks), include enough surrounding context to uniquely identify the target.
+
+### Step 5 — Do the actual work
+
+Make the changes needed to satisfy the assertions:
+
+```bash
+# edit files using your tools
 # ...
 
-# sanity check your changes
+# sanity check before verifying with harness
 cd /path/to/repo && npx tsc --noEmit
 ```
 
-### Step 5 — Verify with harness
+### Step 6 — Verify with harness
 
 ```bash
 harness check 16
@@ -140,7 +160,7 @@ harness check 16
 
 The JSON output includes full `stdout`/`stderr` per assertion — no second round-trip needed to understand the failure.
 
-### Step 6 — Commit, push, then close
+### Step 7 — Commit, push, then close
 
 Only close or fail an issue **after** the code is committed and pushed. This keeps the issue state honest — done means it's in the repo.
 
@@ -183,6 +203,7 @@ harness fail 16 3
 
 ## Tips for autonomous operation
 
+- **`--repo` is optional when inside a git repo** — harness resolves the GitHub remote automatically from `git remote get-url origin`. Only set `GITHUB_REPO` or `--repo` when working across repos or in a CI environment.
 - **Always push before closing** — `git push` first, then `harness done`. The issue represents shipped work.
 - **Always start with `harness scan`** — it checks for open issues automatically before returning ecosystem facts. No need to run `harness history` separately first.
 - **`harness scan` never prompts** — it always outputs JSON. When there are no open issues, you inspect the repo, form recommendations, and ask the user before opening anything.

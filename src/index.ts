@@ -59,8 +59,9 @@ export function out(data: unknown): void {
 }
 
 export function getRepo(flagValue?: string): string {
-  const r = flagValue ?? process.env['GITHUB_REPO'];
-  if (!r) die('no repo — pass --repo owner/repo or set GITHUB_REPO env var');
+  // Priority: --repo flag > GITHUB_REPO env var > git remote in cwd
+  const r = flagValue ?? process.env['GITHUB_REPO'] ?? detectRepo('.');
+  if (!r) die('no repo — pass --repo owner/repo, set GITHUB_REPO, or run from inside a git repo');
   return r;
 }
 
