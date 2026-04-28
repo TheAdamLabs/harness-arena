@@ -1,13 +1,48 @@
 # harness-arena
 
-**Self-correcting task executor for AI coding agents.**
+**Self-correcting loop coordinator for AI coding agents.**
 
-The harness is the *body* — it executes shell commands reliably, retries on transient failures, evaluates assertions, and surfaces everything to GitHub Issues. The AI agent is the *brain* — it authors tasks, reads results, and decides what to do next.
+The AI agent is the brain — it inspects repos, decides what to improve, and makes the changes. harness is the body — it tracks progress on GitHub Issues and verifies whether the work actually succeeded.
 
-```
-AI agent writes task.json → harness run task.json → result + GitHub Issue
-     ↑                                                          |
-     └───────────── agent reads issue, writes next task ────────┘
+```mermaid
+flowchart TD
+    subgraph agent [AI Agent]
+        inspect["Inspect repo\ngit log, tsc, npm test"]
+        write["Write task.json\ngoal + assertions"]
+        work["Make improvements\nedit files, fix errors"]
+        next["Pick next improvement"]
+    end
+
+    subgraph harness_cli [harness CLI]
+        open["harness open"]
+        check["harness check"]
+        logCmd["harness log"]
+        done["harness done"]
+        failCmd["harness fail"]
+    end
+
+    subgraph github [GitHub Issues]
+        running(["Issue\nharness:running"])
+        succeeded(["Issue closed\nharness:succeeded"])
+        failed(["Issue open\nharness:failed"])
+    end
+
+    inspect --> write
+    write --> open
+    open --> running
+    running --> work
+    work --> check
+
+    check -->|"all assertions pass"| logCmd
+    logCmd -->|success| done
+    done --> succeeded
+    succeeded --> next
+    next --> inspect
+
+    check -->|"assertion failed"| logCmd
+    logCmd -->|"retries left"| work
+    logCmd -->|"no retries left"| failCmd
+    failCmd --> failed
 ```
 
 No LLM bundled. Bring your own agent (Cursor, Claude Code, any coding AI).
@@ -23,19 +58,20 @@ npm install && npm run build
 npm install -g .
 ```
 
-Requires `gh` CLI authenticated (`gh auth login`) for GitHub Issues observability.
+Requires `GITHUB_TOKEN` env var for GitHub Issues observability.
 
 ---
 
-## Usage
+## Commands
 
 ```bash
-harness run task.json            # execute a task
-harness validate task.json       # check schema without running
-harness help                     # full reference
+harness open   <task.json>                   # open tracking issue → { number, url }
+harness check  <task.json>                   # run assertions → PASS/FAIL per assertion
+harness log    <issue-number> "<message>"    # add a comment to the issue
+harness done   <issue-number> [attempts]     # close issue as succeeded
+harness fail   <issue-number> [attempts]     # mark issue as failed (leave open)
+harness help                                 # full reference
 ```
-
-Set `GITHUB_REPO=owner/repo` (or add `"repo"` to the task) to enable GitHub Issues.
 
 ---
 
@@ -43,45 +79,36 @@ Set `GITHUB_REPO=owner/repo` (or add `"repo"` to the task) to enable GitHub Issu
 
 ```json
 {
-  "goal": "Add JSDoc to all exported functions in src/utils.ts",
-  "repo": "theadamlabs/my-project",
-  "workdir": "/path/to/cloned/repo",
-  "maxRetries": 3,
-  "steps": [
-    { "type": "shell", "command": "npm ci" },
-    { "type": "shell", "command": "npx tsc --noEmit" },
-    { "type": "file",  "action": "write", "path": "src/utils.ts", "content": "..." },
-    { "type": "shell", "command": "git add src/utils.ts" },
-    { "type": "shell", "command": "git commit -m 'docs: add JSDoc to utils'" }
-  ],
+  "goal":       "Fix all TypeScript type errors in src/",
+  "repo":       "owner/repo",
+  "workdir":    "/absolute/path/to/repo",
   "assertions": [
     { "type": "shell", "command": "npx tsc --noEmit", "expect": { "exitCode": 0 } },
-    { "type": "file",  "path": "src/utils.ts", "expect": { "contains": "@param" } }
+    { "type": "shell", "command": "npm test",          "expect": { "exitCode": 0 } },
+    { "type": "file",  "path": "dist/index.js",        "expect": { "exists": true } }
   ]
 }
 ```
 
-### Step types
+Assertions define what success looks like. The AI agent decides how to get there.
 
-| type    | fields                                                      |
-|---------|-------------------------------------------------------------|
-| `shell` | `command`, `cwd?`, `env?`, `timeout?` (ms, default 60 000) |
-| `file`  | `action` (write/append/delete), `path`, `content?`         |
+### Assertion types
 
-### Assertion expects
+**`shell`** — runs a command and checks its output:
 
-**shell assertions** — runs the command and checks:
+| field         | type    | meaning                                      |
+|---------------|---------|----------------------------------------------|
+| `command`     | string  | shell command to run                         |
+| `cwd`         | string  | working directory override (optional)        |
+| `exitCode`    | number  | expected exit code, default `0`              |
+| `contains`    | string  | stdout+stderr must include this string       |
+| `notContains` | string  | stdout+stderr must NOT include this string   |
 
-| key           | type    | meaning                                     |
-|---------------|---------|---------------------------------------------|
-| `exitCode`    | number  | process must exit with this code (default 0)|
-| `contains`    | string  | stdout+stderr must include this string      |
-| `notContains` | string  | stdout+stderr must NOT include this string  |
+**`file`** — inspects a file on disk:
 
-**file assertions** — inspects a file path:
-
-| key           | type    | meaning                              |
+| field         | type    | meaning                              |
 |---------------|---------|--------------------------------------|
+| `path`        | string  | path relative to `workdir`           |
 | `exists`      | boolean | file must or must not exist          |
 | `contains`    | string  | file content must include string     |
 | `notContains` | string  | file content must NOT include string |
@@ -90,48 +117,23 @@ Set `GITHUB_REPO=owner/repo` (or add `"repo"` to the task) to enable GitHub Issu
 
 ## GitHub Issues observability
 
-When `repo` is set, every task run:
+| Event                     | GitHub action                                        |
+|---------------------------|------------------------------------------------------|
+| `harness open`            | Creates issue, label `harness:running`               |
+| `harness log`             | Adds a comment (attempts, errors, diffs)             |
+| `harness done`            | Closes issue, label `harness:succeeded`              |
+| `harness fail`            | Leaves issue open, label `harness:failed`            |
 
-| Event              | GitHub action                                             |
-|--------------------|-----------------------------------------------------------|
-| Task starts        | Opens issue titled `[harness] <goal>`, label `harness:running` |
-| Attempt N fails    | Adds comment with per-step log (stdout, stderr, exit code)|
-| All retries done   | Swaps label to `harness:failed`, leaves issue open        |
-| Assertions pass    | Closes issue, label `harness:succeeded`                   |
-
-Labels are created automatically on first run (`--force` to update descriptions).
+Labels are created automatically on first `open`.
 
 ---
 
-## Self-correction strategies
+## Environment
 
-The harness applies one in-place correction per step before counting a retry:
-
-| Error class   | Automatic correction                        |
-|---------------|---------------------------------------------|
-| `timeout`     | Sleep 2 s, retry step                       |
-| `network`     | Sleep 3 s, retry step                       |
-| `not_found`   | Run `npm install` if a Node binary is missing, retry step |
-| `hard`        | Abort attempt immediately                   |
-
-Retry backoff between full attempts: `1 000 ms × attempt number`.
-
----
-
-## How an AI agent uses this
-
-The agent is responsible for generating each task. The harness is responsible for executing it faithfully and reporting what happened. A typical loop:
-
-1. **Agent:** clone the target repo, inspect it (`git log`, `tsc --noEmit`, `npm test`).
-2. **Agent:** identify one concrete improvement (failing test, type error, missing doc).
-3. **Agent:** write a `task.json` describing the steps to fix it.
-4. **Agent:** call `harness run task.json`.
-5. **Harness:** executes, retries on transient errors, files GitHub Issue.
-6. **Agent:** reads result JSON (stdout) and the GitHub Issue for full detail.
-7. **Agent:** if `ok: false`, generate a corrected task and go to step 4.
-8. **Agent:** if `ok: true`, pick the next improvement and go to step 2.
-
-The harness never decides *what* to improve — only *whether the steps succeeded*.
+| Variable       | Purpose                                          |
+|----------------|--------------------------------------------------|
+| `GITHUB_TOKEN` | Required for all GitHub API calls                |
+| `GITHUB_REPO`  | Fallback `owner/repo` if `task.repo` is not set  |
 
 ---
 
@@ -139,11 +141,11 @@ The harness never decides *what* to improve — only *whether the steps succeede
 
 ```
 src/
-  types.ts      — Task, Step, Assertion, StepResult interfaces
-  executor.ts   — step execution (shell + file) and assertion evaluation
-  reporter.ts   — GitHub Issues via gh CLI
-  runner.ts     — retry loop, correction strategies
-  index.ts      — CLI entry point
+  types.ts     — Task, Assertion, CheckResult interfaces
+  checker.ts   — assertion evaluation (shell + file, read-only)
+  reporter.ts  — GitHub Issues via @octokit/rest
+  index.ts     — CLI entry point
+SKILL.md       — agent usage guide (auto-installed to ~/.cursor/skills/)
 ```
 
 ---
