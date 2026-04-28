@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 /**
- * harness — self-correcting loop coordinator for AI coding agents.
+ * harness — autonomous repo improvement loop coordinator.
  *
- * The AI agent authors tasks and does the actual work.
- * harness handles GitHub Issues observability and assertion verification.
+ * GitHub Issues are the single source of truth.
+ * No task.json required. Any agent on any machine picks up work by issue number.
  *
  * Commands:
- *   harness open   <task.json>                    Open a tracking GitHub Issue
- *   harness check  <task.json>                    Run assertions, print PASS/FAIL
- *   harness log    <issue-number> <message>       Add a comment to the issue
- *   harness done   <issue-number> <attempts>      Close issue as succeeded
- *   harness fail   <issue-number> <attempts>      Mark issue as failed (leave open)
- *   harness help                                  Show this help
+ *   harness scan    <workdir> [--repo owner/repo] [--goal "..."]
+ *   harness open    "<goal>"  --repo owner/repo   [--workdir path] [--assert "cmd"]...
+ *   harness check   <issue>                       [--workdir override]
+ *   harness log     <issue>   "<message>"
+ *   harness done    <issue>   [attempts]
+ *   harness fail    <issue>   [attempts]
+ *   harness context <issue>
+ *   harness history [--repo owner/repo]
+ *   harness help
  */
 
 import fs from 'fs';
@@ -19,8 +22,12 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { check, formatCheckResult } from './checker.js';
-import { openIssue, addComment, closeAsSucceeded, markAsFailed } from './reporter.js';
-import type { Task } from './types.js';
+import {
+  openIssue, addComment, closeAsSucceeded, markAsFailed,
+  getContext, listIssues,
+} from './reporter.js';
+import { scan } from './scanner.js';
+import type { HarnessConfig, Assertion } from './types.js';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_SRC  = path.resolve(__dir, '../SKILL.md');
@@ -40,31 +47,10 @@ function out(data: unknown): void {
   process.stdout.write(JSON.stringify(data, null, 2) + '\n');
 }
 
-function readTask(filePath: string): Task {
-  const resolved = path.resolve(filePath);
-  let raw: string;
-  try {
-    raw = fs.readFileSync(resolved, 'utf8');
-  } catch {
-    die(`cannot read task file: ${resolved}`);
-  }
-
-  let task: unknown;
-  try {
-    task = JSON.parse(raw);
-  } catch {
-    die(`invalid JSON in ${resolved}`);
-  }
-
-  if (typeof task !== 'object' || task === null) die('task must be a JSON object');
-  const t = task as Record<string, unknown>;
-  if (typeof t['goal'] !== 'string' || !t['goal']) die('task.goal must be a non-empty string');
-
-  return t as unknown as Task;
-}
-
-function getRepo(task: Task): string | undefined {
-  return task.repo ?? process.env['GITHUB_REPO'];
+function getRepo(flag?: string): string {
+  const r = flag ?? process.env['GITHUB_REPO'];
+  if (!r) die('no repo — pass --repo owner/repo or set GITHUB_REPO env var');
+  return r;
 }
 
 function installSkill(): void {
@@ -75,67 +61,103 @@ function installSkill(): void {
   } catch { /* non-fatal */ }
 }
 
+// ---------------------------------------------------------------------------
+// Simple flag parser: --key value, --key value1 --key value2 for multi-value
+// ---------------------------------------------------------------------------
+
+interface Args {
+  positional: string[];
+  flags: Record<string, string[]>;
+}
+
+function parseArgs(argv: string[]): Args {
+  const positional: string[] = [];
+  const flags: Record<string, string[]> = {};
+
+  let i = 0;
+  while (i < argv.length) {
+    const arg = argv[i]!;
+    if (arg.startsWith('--')) {
+      const key = arg.slice(2);
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('--')) {
+        flags[key] = [...(flags[key] ?? []), next];
+        i += 2;
+      } else {
+        flags[key] = [...(flags[key] ?? []), 'true'];
+        i += 1;
+      }
+    } else {
+      positional.push(arg);
+      i++;
+    }
+  }
+
+  return { positional, flags };
+}
+
+function flag(args: Args, key: string): string | undefined  { return args.flags[key]?.[0]; }
+function flags(args: Args, key: string): string[]           { return args.flags[key] ?? []; }
+
+// ---------------------------------------------------------------------------
+// Help
+// ---------------------------------------------------------------------------
+
 function printHelp(): void {
   process.stdout.write(`
-harness — self-correcting loop coordinator for AI coding agents
+harness — autonomous repo improvement loop coordinator
 
-The AI agent does the work. harness tracks it on GitHub and verifies success.
+GitHub Issues are the single source of truth. No local task files needed.
+Any agent on any machine picks up work by issue number alone.
 
 COMMANDS
 
-  harness open <task.json>
-    Open a GitHub Issue for this task. Prints { number, url }.
-    Sets label harness:running. Creates labels if missing.
+  harness scan <workdir> [--repo owner/repo] [--goal "custom goal"]
+    Detect ecosystem, generate assertions, open a tracking issue.
+    Prints { number, url, ecosystem, goal }.
 
-  harness check <task.json>
-    Run all assertions in the task. Prints pass/fail per assertion.
-    Exit code 0 = all pass, 1 = at least one fails.
+  harness open "<goal>" --repo owner/repo [--workdir path] [--assert "cmd"]...
+    Open a tracking issue with inline assertions. Deduplicates automatically.
+    Each --assert adds a shell assertion with exitCode 0.
+    Prints { number, url, goal }.
 
-  harness log <issue-number> <message>
-    Add a comment to the tracking issue (progress, errors, attempts).
+  harness check <issue-number> [--workdir override]
+    Fetch config from the issue, run assertions, print PASS/FAIL + output.
+    Exit 0 = all pass, 1 = at least one fails.
+    Includes stdout/stderr in JSON so you don't need a second round-trip.
 
-  harness done <issue-number> <attempts>
-    Close the issue as succeeded. Swaps label to harness:succeeded.
+  harness log <issue-number> "<message>"
+    Add a comment. Use for attempt summaries, errors, what you tried.
 
-  harness fail <issue-number> <attempts>
-    Mark the issue as failed (leave open). Swaps label to harness:failed.
+  harness done <issue-number> [attempts]
+    Close issue as succeeded. Swaps label to harness:succeeded.
+
+  harness fail <issue-number> [attempts]
+    Mark issue as failed (leave open). Swaps label to harness:failed.
+
+  harness context <issue-number>
+    Return the full issue: goal, config, all attempt comments.
+    Read this before resuming work on an existing issue.
+
+  harness history [--repo owner/repo]
+    List all harness issues for the repo (running, succeeded, failed).
 
   harness help
     Show this help.
 
-TASK FORMAT
-
-  {
-    "goal":       "Fix all TypeScript type errors in src/",
-    "repo":       "owner/repo",
-    "workdir":    "/path/to/repo",
-    "assertions": [
-      { "type": "shell", "command": "npx tsc --noEmit", "expect": { "exitCode": 0 } },
-      { "type": "shell", "command": "npm test",         "expect": { "exitCode": 0 } },
-      { "type": "file",  "path": "dist/index.js",       "expect": { "exists": true } }
-    ]
-  }
-
-ASSERTION TYPES
-
-  shell  { command, cwd?, expect: { exitCode?, contains?, notContains? } }
-  file   { path, expect: { exists?, contains?, notContains? } }
-
 ENVIRONMENT
 
-  GITHUB_TOKEN   Required for GitHub API access
-  GITHUB_REPO    Fallback repo (owner/repo) if task.repo is not set
+  GITHUB_TOKEN   Required for all GitHub API calls
+  GITHUB_REPO    Default repo (owner/repo) — used when --repo is omitted
 
-LOOP PATTERN (for AI agents — see SKILL.md for full guide)
+LOOP PATTERN  (see SKILL.md for the full guide)
 
-  1. Write task.json with goal + assertions
-  2. harness open task.json          → { number, url }
-  3. Do the actual work (edit files, run commands, etc.)
-  4. harness check task.json         → PASS or FAIL
-  5. harness log <number> "<notes>"
-  6. If PASS:  harness done <number> <attempt>
-     If FAIL and retries left: go to step 3
-     If FAIL and out of retries: harness fail <number> <attempt>
+  harness scan ./my-repo --repo owner/repo          # auto-detect + open issue
+  harness context <issue>                           # read prior attempts
+  # ... do the work ...
+  harness check <issue>                             # verify assertions
+  harness log <issue> "what I did and what happened"
+  harness done <issue> 1   OR   harness fail <issue> 3
 `);
 }
 
@@ -145,25 +167,51 @@ LOOP PATTERN (for AI agents — see SKILL.md for full guide)
 
 installSkill();
 
-const [,, command, arg1, arg2] = process.argv;
+const [,, command, ...rest] = process.argv;
+const args = parseArgs(rest);
 
 if (!command || command === 'help' || command === '--help' || command === '-h') {
   printHelp();
   process.exit(0);
 }
 
+// --- scan -------------------------------------------------------------------
+if (command === 'scan') {
+  const workdir = args.positional[0] ?? '.';
+  const repo    = getRepo(flag(args, 'repo'));
+  const goal    = flag(args, 'goal');
+
+  const result = scan(workdir, goal);
+  if (!result) die(`could not detect ecosystem in ${path.resolve(workdir)}`);
+
+  process.stderr.write(`[harness] detected: ${result.ecosystem}\n`);
+  process.stderr.write(`[harness] goal: ${result.goal}\n`);
+
+  const handle = await openIssue(result.goal, result.config, repo);
+  if (!handle) die('failed to open GitHub issue');
+
+  out({ ...handle, ecosystem: result.ecosystem });
+  process.exit(0);
+}
+
 // --- open -------------------------------------------------------------------
 if (command === 'open') {
-  if (!arg1) die('open requires a task file path\n  Usage: harness open <task.json>');
-  const task = readTask(arg1);
-  const repo = getRepo(task);
+  const goal    = args.positional[0];
+  const repo    = getRepo(flag(args, 'repo'));
+  const workdir = flag(args, 'workdir') ? path.resolve(flag(args, 'workdir')!) : undefined;
+  const asserts = flags(args, 'assert');
 
-  if (!repo) {
-    die('no repo specified — set task.repo or GITHUB_REPO env var');
-  }
+  if (!goal) die('open requires a goal\n  Usage: harness open "<goal>" --repo owner/repo [--assert "cmd"]...');
 
-  const handle = await openIssue(task, repo);
-  if (!handle) die('failed to open GitHub issue (check GITHUB_TOKEN and repo access)');
+  const assertions: Assertion[] = asserts.map((cmd) => ({
+    type: 'shell' as const,
+    command: cmd,
+    expect: { exitCode: 0 },
+  }));
+
+  const config: HarnessConfig = { workdir, assertions };
+  const handle = await openIssue(goal, config, repo);
+  if (!handle) die('failed to open GitHub issue');
 
   out(handle);
   process.exit(0);
@@ -171,10 +219,17 @@ if (command === 'open') {
 
 // --- check ------------------------------------------------------------------
 if (command === 'check') {
-  if (!arg1) die('check requires a task file path\n  Usage: harness check <task.json>');
-  const task = readTask(arg1);
-  const result = await check(task);
+  const issueNumber = args.positional[0];
+  const repo        = getRepo(flag(args, 'repo'));
+  const workdirOverride = flag(args, 'workdir');
 
+  if (!issueNumber) die('check requires an issue number\n  Usage: harness check <number>');
+
+  const ctx = await getContext(repo, issueNumber);
+  if (!ctx) die(`could not fetch issue #${issueNumber}`);
+  if (ctx.config.assertions.length === 0) die(`issue #${issueNumber} has no assertions`);
+
+  const result = await check(ctx.config, workdirOverride);
   process.stdout.write(formatCheckResult(result) + '\n');
   out(result);
   process.exit(result.ok ? 0 : 1);
@@ -182,35 +237,71 @@ if (command === 'check') {
 
 // --- log --------------------------------------------------------------------
 if (command === 'log') {
-  if (!arg1 || !arg2) die('log requires issue number and message\n  Usage: harness log <number> "<message>"');
-  const task_repo = process.env['GITHUB_REPO'];
-  if (!task_repo) die('GITHUB_REPO env var required for log command');
+  const issueNumber = args.positional[0];
+  const message     = args.positional[1];
+  const repo        = getRepo(flag(args, 'repo'));
 
-  await addComment(task_repo, arg1, arg2);
+  if (!issueNumber || !message) die('log requires issue number and message\n  Usage: harness log <number> "<message>"');
+
+  await addComment(repo, issueNumber, message);
   process.exit(0);
 }
 
 // --- done -------------------------------------------------------------------
 if (command === 'done') {
-  if (!arg1) die('done requires an issue number\n  Usage: harness done <number> [attempts]');
-  const repo = process.env['GITHUB_REPO'];
-  if (!repo) die('GITHUB_REPO env var required for done command');
+  const issueNumber = args.positional[0];
+  const attempts    = Number(args.positional[1] ?? '1');
+  const repo        = getRepo(flag(args, 'repo'));
 
-  const attempts = arg2 ? Number(arg2) : 1;
-  await closeAsSucceeded(repo, arg1, attempts);
-  process.stdout.write(`[harness] Issue #${arg1} closed as succeeded.\n`);
+  if (!issueNumber) die('done requires an issue number\n  Usage: harness done <number> [attempts]');
+
+  await closeAsSucceeded(repo, issueNumber, attempts);
+  process.stdout.write(`[harness] Issue #${issueNumber} closed as succeeded.\n`);
   process.exit(0);
 }
 
 // --- fail -------------------------------------------------------------------
 if (command === 'fail') {
-  if (!arg1) die('fail requires an issue number\n  Usage: harness fail <number> [attempts]');
-  const repo = process.env['GITHUB_REPO'];
-  if (!repo) die('GITHUB_REPO env var required for fail command');
+  const issueNumber = args.positional[0];
+  const attempts    = Number(args.positional[1] ?? '1');
+  const repo        = getRepo(flag(args, 'repo'));
 
-  const attempts = arg2 ? Number(arg2) : 1;
-  await markAsFailed(repo, arg1, attempts);
-  process.stdout.write(`[harness] Issue #${arg1} marked as failed.\n`);
+  if (!issueNumber) die('fail requires an issue number\n  Usage: harness fail <number> [attempts]');
+
+  await markAsFailed(repo, issueNumber, attempts);
+  process.stdout.write(`[harness] Issue #${issueNumber} marked as failed.\n`);
+  process.exit(0);
+}
+
+// --- context ----------------------------------------------------------------
+if (command === 'context') {
+  const issueNumber = args.positional[0];
+  const repo        = getRepo(flag(args, 'repo'));
+
+  if (!issueNumber) die('context requires an issue number\n  Usage: harness context <number>');
+
+  const ctx = await getContext(repo, issueNumber);
+  if (!ctx) die(`could not fetch issue #${issueNumber}`);
+
+  out(ctx);
+  process.exit(0);
+}
+
+// --- history ----------------------------------------------------------------
+if (command === 'history') {
+  const repo = getRepo(flag(args, 'repo'));
+
+  const issues = await listIssues(repo);
+  if (issues.length === 0) {
+    process.stdout.write('No harness issues found.\n');
+  } else {
+    for (const i of issues) {
+      const icon = i.status === 'succeeded' ? '✅' : i.status === 'failed' ? '❌' : '🔄';
+      process.stdout.write(`${icon} #${i.number.padEnd(4)} ${i.goal.slice(0, 60).padEnd(62)} ${i.updatedAt.slice(0, 10)}\n`);
+    }
+    process.stdout.write(`\n${issues.length} issue(s)\n`);
+  }
+  out(issues);
   process.exit(0);
 }
 

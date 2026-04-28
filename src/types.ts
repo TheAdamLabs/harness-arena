@@ -1,20 +1,15 @@
 // ---------------------------------------------------------------------------
-// Assertions — what harness verifies autonomously.
-// The AI agent decides HOW to achieve the goal; harness checks WHETHER it did.
+// Assertions — what harness verifies. The AI agent decides how to get there.
 // ---------------------------------------------------------------------------
 
 export interface ShellAssertion {
   type: 'shell';
-  /** Command to run. Exit code + output are checked. */
   command: string;
-  /** Working directory override (resolved relative to task.workdir or cwd). */
+  /** Working directory override, resolved relative to HarnessConfig.workdir. */
   cwd?: string;
   expect: {
-    /** Expected exit code. Default: 0. */
     exitCode?: number;
-    /** Combined stdout+stderr must include this string. */
     contains?: string;
-    /** Combined stdout+stderr must NOT include this string. */
     notContains?: string;
   };
 }
@@ -32,29 +27,30 @@ export interface FileAssertion {
 export type Assertion = ShellAssertion | FileAssertion;
 
 // ---------------------------------------------------------------------------
-// Task — authored by the AI agent, handed to harness for tracking
+// HarnessConfig — embedded in the GitHub Issue body as a hidden HTML comment.
+// This is the single source of truth; no local file needed.
 // ---------------------------------------------------------------------------
 
-export interface Task {
-  /** Human-readable goal; becomes the GitHub Issue title. */
-  goal: string;
-  /** Target GitHub repo for observability (owner/repo). */
-  repo?: string;
-  /** Base directory for assertion commands and file paths. Default: cwd. */
-  workdir?: string;
-  /** Conditions that must all pass for the task to be considered done. */
-  assertions?: Assertion[];
+export interface HarnessConfig {
+  /** Absolute path where assertion commands run. Defaults to process.cwd(). */
+  workdir?: string | undefined;
+  assertions: Assertion[];
 }
 
 // ---------------------------------------------------------------------------
-// Results returned by checker and CLI commands
+// Results — include raw output so agents don't need a second round-trip
 // ---------------------------------------------------------------------------
 
 export interface AssertionResult {
   ok: boolean;
   assertion: Assertion;
-  /** Human-readable explanation when ok is false. */
+  /** Human-readable reason when ok is false. */
   reason?: string | undefined;
+  /** Captured stdout from shell assertions. */
+  stdout?: string | undefined;
+  /** Captured stderr from shell assertions. */
+  stderr?: string | undefined;
+  exitCode?: number | undefined;
 }
 
 export interface CheckResult {
@@ -62,8 +58,30 @@ export interface CheckResult {
   results: AssertionResult[];
 }
 
+// ---------------------------------------------------------------------------
+// Issue types
+// ---------------------------------------------------------------------------
+
 export interface IssueHandle {
-  /** Issue number as a string, e.g. "42". */
   number: string;
   url: string;
+  goal: string;
+}
+
+export interface IssueSummary {
+  number: string;
+  url: string;
+  goal: string;
+  status: 'running' | 'succeeded' | 'failed' | 'unknown';
+  updatedAt: string;
+}
+
+export interface IssueContext {
+  number: string;
+  url: string;
+  goal: string;
+  status: 'running' | 'succeeded' | 'failed' | 'unknown';
+  config: HarnessConfig;
+  /** All comments in chronological order — the full attempt history. */
+  attempts: Array<{ id: number; body: string; createdAt: string }>;
 }

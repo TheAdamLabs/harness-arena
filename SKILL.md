@@ -4,211 +4,156 @@ Use the **Shell tool** to run `harness COMMAND` commands.
 
 ## What harness is
 
-harness is a **loop coordinator and GitHub Issues tracker** for autonomous repo improvement. You (the AI agent) decide *what* to do and *do it*. harness handles *tracking* and *verifying* outcomes.
+harness is a **loop coordinator and GitHub Issues tracker** for autonomous repo improvement.
+
+**You do the work. harness tracks it and verifies it.**
+
+The GitHub Issue is the single source of truth — no local task files. Any agent on any machine picks up work by issue number alone.
 
 ```
-you write task.json → harness open → you do the work → harness check → harness done/fail
-                                                ↑              |
-                              ← retry if assertions fail ──────┘
+harness scan ./repo  →  issue #42 (goal + assertions stored inside)
+you do the work      →  edit files, run commands
+harness check 42     →  assertions pass or fail (with full output)
+harness done 42      →  issue closed ✅
+       ↕
+harness context 42   →  read prior attempts before retrying
 ```
 
-## Prerequisites — check install
+## Prerequisites
 
 ```bash
 harness help
-# If not found: cd /path/to/harness-arena && npm install && npm run build && npm install -g .
+# Not found? cd /path/to/harness-arena && npm install && npm run build && npm install -g .
+# Requires GITHUB_TOKEN and GITHUB_REPO=owner/repo
 ```
-
-Requires `GITHUB_TOKEN` and `GITHUB_REPO=owner/repo` env vars for GitHub Issues.
 
 ## Command reference
 
 ```bash
-harness help                                   # full reference
-harness open   <task.json>                     # open tracking issue → { number, url }
-harness check  <task.json>                     # run assertions → PASS/FAIL + JSON
-harness log    <issue-number> "<message>"      # add comment to issue
-harness done   <issue-number> [attempts]       # close as succeeded
-harness fail   <issue-number> [attempts]       # mark as failed (leave open)
+harness help                                        # full reference
+harness scan    <workdir> [--repo R] [--goal "..."] # detect ecosystem → open issue
+harness open    "<goal>"  --repo R [--workdir P] [--assert "cmd"]...  # open issue inline
+harness check   <issue>  [--workdir override]       # run assertions → PASS/FAIL + output
+harness log     <issue>   "<message>"               # add attempt comment
+harness context <issue>                             # read goal + config + all prior attempts
+harness history [--repo R]                          # list all harness issues for the repo
+harness done    <issue>  [attempts]                 # close as succeeded
+harness fail    <issue>  [attempts]                 # mark as failed (leave open)
 ```
-
-## Task format
-
-```json
-{
-  "goal":       "Fix all TypeScript type errors in src/",
-  "repo":       "owner/repo",
-  "workdir":    "/absolute/path/to/repo",
-  "assertions": [
-    { "type": "shell", "command": "npx tsc --noEmit",  "expect": { "exitCode": 0 } },
-    { "type": "shell", "command": "npm test",           "expect": { "exitCode": 0 } },
-    { "type": "file",  "path": "dist/index.js",         "expect": { "exists": true } }
-  ]
-}
-```
-
-**Assertions are the contract.** You define what success looks like. harness verifies it.
 
 ## The autonomous improvement loop
 
-Use this pattern for every improvement task:
+### Step 1 — Orient yourself
 
-### Step 1 — Understand the repo
-
-Before writing a task, inspect the repo so your assertions are accurate:
+Before starting anything, check existing work to avoid duplication:
 
 ```bash
-# Get an overview
-git -C /path/to/repo log --oneline -10
-git -C /path/to/repo status
-
-# Find what's broken
-cd /path/to/repo && npx tsc --noEmit 2>&1 | head -40
-cd /path/to/repo && npm test 2>&1 | tail -30
+harness history --repo owner/repo
+# → ✅ #12  Fix TypeScript errors            2026-04-28
+# → 🔄 #14  Add missing JSDoc                2026-04-28
+# → ❌ #11  Add rate limiting middleware      2026-04-27
 ```
 
-### Step 2 — Write a focused task.json
-
-One concrete goal per task. Vague goals produce bad results.
-
-```json
-{
-  "goal": "Add return type annotations to all functions in src/utils.ts",
-  "repo": "owner/repo",
-  "workdir": "/path/to/repo",
-  "assertions": [
-    { "type": "shell", "command": "npx tsc --noEmit", "expect": { "exitCode": 0 } },
-    { "type": "file",  "path": "src/utils.ts", "expect": { "contains": ": void" } }
-  ]
-}
-```
-
-### Step 3 — Open a tracking issue
+To resume a failed or in-progress issue, read its history first:
 
 ```bash
-export GITHUB_REPO=owner/repo
-harness open task.json
-# → { "number": "42", "url": "https://github.com/..." }
-ISSUE=42
+harness context 14
+# → { goal, config, status, attempts: [ "Attempt 1: ...", "Attempt 2: ..." ] }
 ```
 
-### Step 4 — Do the actual work
+### Step 2 — Start a new task
 
-This is your job. Edit files, run commands, make changes:
+**Auto-detect ecosystem (recommended for any project):**
 
 ```bash
-# Read the file
-cat /path/to/repo/src/utils.ts
+harness scan ./my-repo --repo owner/repo
+# detects TypeScript/Node/Rust/Python/Go/Makefile automatically
+# → { number: "15", url: "...", ecosystem: "TypeScript / Node.js", goal: "Ensure all checks pass" }
+```
 
-# Make improvements (use your file editing tools)
+**Custom goal with inline assertions:**
+
+```bash
+harness open "Add JSDoc to all public functions in src/api.ts" \
+  --repo owner/repo \
+  --workdir /path/to/repo \
+  --assert "npx tsc --noEmit" \
+  --assert "grep -r '@param' src/api.ts"
+# → { number: "16", url: "..." }
+```
+
+Both commands deduplicate automatically — if an open issue with the same goal already exists, the existing issue is returned.
+
+### Step 3 — Do the actual work
+
+This is entirely your responsibility. Read files, edit code, run commands:
+
+```bash
+cat /path/to/repo/src/api.ts
+# understand what needs changing
+
+# edit the file using your tools
 # ...
 
-# Verify your changes compile
+# sanity check your changes
 cd /path/to/repo && npx tsc --noEmit
 ```
 
-### Step 5 — Check assertions
+### Step 4 — Verify with harness
 
 ```bash
-harness check task.json
-# → ✅ shell: `npx tsc --noEmit`
-# → ✅ file: `src/utils.ts`
-# → 2/2 assertions passed
-# exit code 0 = success, 1 = failure
+harness check 16
+# ✅ shell: `npx tsc --noEmit`
+# ❌ shell: `grep -r '@param' src/api.ts`
+#    reason: exit 1 (expected 0)
+#    stdout: (empty — grep found nothing)
+# 1/2 assertions passed
 ```
 
-### Step 6 — Log and close or retry
+The JSON output includes full `stdout`/`stderr` per assertion — no second round-trip needed to understand the failure.
 
-**On success:**
+### Step 5 — Log and close or retry
+
+**All assertions pass:**
 ```bash
-harness log $ISSUE "Fixed return types on 5 functions. All type checks pass."
-harness done $ISSUE 1
+harness log 16 "Added @param/@returns to 8 functions. tsc clean, grep confirms."
+harness done 16 1
 ```
 
-**On failure — log what you tried and retry:**
+**Assertion failed — log and retry:**
 ```bash
-harness log $ISSUE "Attempt 1 failed: tsc still shows 3 errors in utils.ts — fixing now."
-# ... fix more things ...
-harness check task.json
-harness log $ISSUE "Attempt 2: all assertions pass."
-harness done $ISSUE 2
+harness log 16 "Attempt 1: added JSDoc to 5/8 functions. 3 still missing in src/api.ts lines 120-180."
+# fix the remaining 3...
+harness check 16
+harness log 16 "Attempt 2: all 8 functions documented. Both assertions pass."
+harness done 16 2
 ```
 
-**Out of ideas (give up):**
+**Genuinely blocked:**
 ```bash
-harness log $ISSUE "Could not fix: error is in a generated file outside our control."
-harness fail $ISSUE 3
+harness log 16 "grep assertion impossible — file is auto-generated and overwritten on build."
+harness fail 16 3
 ```
 
-## Patterns for common improvement tasks
-
-### Fix type errors
+## Assertion cheat sheet
 
 ```json
-{
-  "goal": "Fix TypeScript errors in src/",
-  "assertions": [
-    { "type": "shell", "command": "npx tsc --noEmit", "expect": { "exitCode": 0 } }
-  ]
-}
+{ "type": "shell", "command": "npx tsc --noEmit",      "expect": { "exitCode": 0 } }
+{ "type": "shell", "command": "npm test",               "expect": { "exitCode": 0 } }
+{ "type": "shell", "command": "cargo clippy",           "expect": { "exitCode": 0 } }
+{ "type": "shell", "command": "python -m pytest",       "expect": { "exitCode": 0 } }
+{ "type": "shell", "command": "go test ./...",          "expect": { "exitCode": 0 } }
+{ "type": "shell", "command": "grep -r 'TODO' src/",   "expect": { "exitCode": 1 } }
+{ "type": "file",  "path": "dist/index.js",            "expect": { "exists": true } }
+{ "type": "file",  "path": "src/utils.ts",             "expect": { "contains": "@returns" } }
 ```
 
-Work pattern: run `tsc --noEmit 2>&1 | head -50` → fix errors one file at a time → check.
+## Tips for autonomous operation
 
-### Make tests pass
-
-```json
-{
-  "goal": "Fix failing tests in src/__tests__/",
-  "assertions": [
-    { "type": "shell", "command": "npm test -- --passWithNoTests", "expect": { "exitCode": 0 } }
-  ]
-}
-```
-
-Work pattern: run `npm test 2>&1 | tail -40` → read failing test → fix source → check.
-
-### Improve documentation
-
-```json
-{
-  "goal": "Add JSDoc to all exported functions in src/api.ts",
-  "assertions": [
-    { "type": "file", "path": "src/api.ts", "expect": { "contains": "@param" } },
-    { "type": "shell", "command": "npx tsc --noEmit", "expect": { "exitCode": 0 } }
-  ]
-}
-```
-
-### Refactor with safety
-
-```json
-{
-  "goal": "Rename UserData to User across the codebase",
-  "assertions": [
-    { "type": "shell", "command": "grep -r 'UserData' src/", "expect": { "exitCode": 1 } },
-    { "type": "shell", "command": "npm test", "expect": { "exitCode": 0 } }
-  ]
-}
-```
-
-### Add a missing feature
-
-```json
-{
-  "goal": "Add rate limiting to the /api/search endpoint",
-  "assertions": [
-    { "type": "shell", "command": "npm test -- --testPathPattern=search", "expect": { "exitCode": 0 } },
-    { "type": "file",  "path": "src/middleware/rateLimit.ts", "expect": { "exists": true } }
-  ]
-}
-```
-
-## Tips
-
-- **One goal, one task.** Smaller tasks are easier to verify and retry.
-- **Assertions are the spec.** Make them precise — the looser they are, the less they prove.
-- **Log everything.** `harness log` comments are permanent — they help future agents and humans understand what happened.
-- **Read before writing.** Always inspect the target file/test before making changes.
-- **Fail fast.** If assertion output shows the problem is structural (generated files, external deps), call `harness fail` early instead of exhausting retries.
-- **workdir matters.** Shell assertions run in `workdir`, so set it to the repo root.
+- **Always run `harness history` first** — don't open duplicate issues.
+- **Always run `harness context <issue>` before resuming** — read what was tried before trying the same thing again.
+- **One goal per issue, make it specific** — "Fix TypeScript error on line 42 of utils.ts" beats "Fix TypeScript".
+- **Log every attempt** — comments are permanent context for future agents and humans.
+- **`harness check` output is enough to understand failures** — stdout/stderr are included, no need to re-run the failing command.
+- **`harness fail` early** if the goal is structurally impossible — keeps the issue backlog clean.
+- **`--workdir`** — always set this to the repo root so assertions run in the right directory.
