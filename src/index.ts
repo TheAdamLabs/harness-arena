@@ -36,7 +36,7 @@ import {
   openIssue, addComment, closeAsSucceeded, markAsFailed,
   getContext, listIssues,
 } from './reporter.js';
-import { scan } from './scanner.js';
+import { scan, detectRepo } from './scanner.js';
 import type { Args } from './args.js';
 import type { HarnessConfig, Assertion } from './types.js';
 
@@ -148,7 +148,10 @@ LOOP PATTERN  (see SKILL.md for the full guide)
 export async function cmdScan(args: Args): Promise<number> {
   const workdir  = args.positional[0] ?? '.';
   const goalFlag = flag(args, 'goal');
-  const repo     = getRepo(flag(args, 'repo'));
+  // Priority: --repo flag > git remote in workdir > GITHUB_REPO env var
+  const repoFlag = flag(args, 'repo') ?? detectRepo(workdir) ?? process.env['GITHUB_REPO'];
+  if (!repoFlag) die('could not detect GitHub repo — pass --repo owner/repo or set GITHUB_REPO');
+  const repo = repoFlag;
 
   const existing = (await listIssues(repo)).filter((i) => i.status === 'running');
   if (existing.length > 0) {
@@ -166,6 +169,7 @@ export async function cmdScan(args: Args): Promise<number> {
     out({ ...handle, ecosystem: result.ecosystem });
   } else {
     out({
+      repo,
       ecosystem: result.ecosystem,
       config:    result.config,
       next:      `inspect the repo, form 2-4 specific improvement recommendations, ask the user which to pursue, then: harness open "<chosen goal>" --repo ${repo} --workdir ${result.config.workdir ?? path.resolve(workdir)}`,

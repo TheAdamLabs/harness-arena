@@ -6,6 +6,7 @@
  * know the right commands upfront.
  */
 
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import type { Assertion, HarnessConfig } from './types.js';
@@ -69,13 +70,27 @@ function detect(dir: string): EcosystemMatch[] {
       });
     }
 
-    if (assertions.length > 0) {
-      matches.push({
-        name: has(dir, 'tsconfig.json') ? 'TypeScript / Node.js' : 'Node.js',
-        goal: 'Ensure all checks pass (types, lint, tests, build)',
-        assertions,
-      });
+    // Always register Node.js/TypeScript even if no scripts were found —
+    // the agent can add custom assertions via `harness open --assert`.
+    // For plain JS projects without test/build, add a syntax check on
+    // the declared entry point if present.
+    if (assertions.length === 0) {
+      const entry = (pkg['main'] as string | undefined) ??
+        (typeof pkg['bin'] === 'string' ? pkg['bin'] : undefined);
+      if (entry) {
+        assertions.push({
+          type: 'shell',
+          command: `node --check ${entry}`,
+          expect: { exitCode: 0 },
+        });
+      }
     }
+
+    matches.push({
+      name: has(dir, 'tsconfig.json') ? 'TypeScript / Node.js' : 'Node.js',
+      goal: 'Ensure all checks pass (types, lint, tests, build)',
+      assertions,
+    });
   }
 
   // Rust
@@ -161,4 +176,43 @@ export function scan(workdir: string, goal?: string): ScanResult | null {
     goal,
     config: { workdir: absDir, assertions: matches.flatMap((m) => m.assertions) },
   };
+}
+
+/**
+ * Detect the GitHub repo slug (owner/repo) from the git remote in `dir`.
+ * Tries `git remote get-url origin`, then falls back to parsing .git/config.
+ * Returns null if no GitHub remote is found.
+ *
+ * Handles both HTTPS and SSH remote formats:
+ *   https://github.com/owner/repo.git  → owner/repo
+ *   git@github.com:owner/repo.git      → owner/repo
+ */
+export function detectRepo(dir: string): string | null {
+  const absDir = path.resolve(dir);
+
+  // Try git CLI first — most reliable
+  try {
+    const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
+      cwd: absDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return parseGitHubUrl(url);
+  } catch { /* git not available or not a git repo */ }
+
+  // Fallback: read .git/config directly
+  try {
+    const config = fs.readFileSync(path.join(absDir, '.git', 'config'), 'utf8');
+    const match = config.match(/url\s*=\s*(.+)/);
+    if (match?.[1]) return parseGitHubUrl(match[1].trim());
+  } catch { /* no .git/config */ }
+
+  return null;
+}
+
+function parseGitHubUrl(url: string): string | null {
+  // HTTPS: https://github.com/owner/repo or https://github.com/owner/repo.git
+  const https = url.match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
+  if (https?.[1] && https[2]) return `${https[1]}/${https[2]}`;
+  return null;
 }
