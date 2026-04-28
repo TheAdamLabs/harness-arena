@@ -140,20 +140,24 @@ harness check 16
 
 The JSON output includes full `stdout`/`stderr` per assertion — no second round-trip needed to understand the failure.
 
-### Step 6 — Log and close or retry
+### Step 6 — Commit, push, then close
+
+Only close or fail an issue **after** the code is committed and pushed. This keeps the issue state honest — done means it's in the repo.
 
 **All assertions pass:**
 ```bash
 harness log 16 "Added @param/@returns to 8 functions. tsc clean, grep confirms."
+git add -A && git commit -m "feat: add JSDoc to public functions in src/api.ts" && git push
 harness done 16 1
 ```
 
-**Assertion failed — log and retry:**
+**Assertion failed — log and retry (no push yet):**
 ```bash
 harness log 16 "Attempt 1: added JSDoc to 5/8 functions. 3 still missing in src/api.ts lines 120-180."
-# fix the remaining 3...
+# fix the remaining 3, then re-check...
 harness check 16
 harness log 16 "Attempt 2: all 8 functions documented. Both assertions pass."
+git add -A && git commit -m "feat: complete JSDoc coverage in src/api.ts" && git push
 harness done 16 2
 ```
 
@@ -161,6 +165,7 @@ harness done 16 2
 ```bash
 harness log 16 "grep assertion impossible — file is auto-generated and overwritten on build."
 harness fail 16 3
+# No push needed — nothing was changed.
 ```
 
 ## Assertion cheat sheet
@@ -178,6 +183,7 @@ harness fail 16 3
 
 ## Tips for autonomous operation
 
+- **Always push before closing** — `git push` first, then `harness done`. The issue represents shipped work.
 - **Always start with `harness scan`** — it checks for open issues automatically before returning ecosystem facts. No need to run `harness history` separately first.
 - **`harness scan` never prompts** — it always outputs JSON. When there are no open issues, you inspect the repo, form recommendations, and ask the user before opening anything.
 - **Always run `harness context <issue>` before resuming** — read what was tried before trying the same thing again.
