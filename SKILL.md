@@ -65,10 +65,22 @@ harness scan ./my-repo --repo owner/repo
 {
   "ecosystem": "TypeScript / Node.js",
   "config": { "workdir": "/path/to/repo", "assertions": [...] },
-  "next": "harness open \"<your goal>\" --repo owner/repo --workdir /path/to/repo"
+  "next": "inspect the repo, form 2-4 specific improvement recommendations, ask the user which to pursue, then: harness open \"<chosen goal>\" --repo owner/repo --workdir /path/to/repo"
 }
 ```
-→ Inspect the repo, decide a specific goal, then call `harness open`.
+→ **Do not open an issue yet.** Inspect the repo first, then ask the user:
+
+```
+I scanned the repo and found a few things worth improving:
+
+1. checker.ts has no unit tests (scanner and reporter are covered)
+2. There are 3 TypeScript strict errors in src/reporter.ts
+3. README examples reference the old task.json format
+
+Which would you like me to tackle? Or do you have a different goal in mind?
+```
+
+Wait for the user's answer, then call `harness open` with the chosen goal.
 
 **Shortcut — scan + open in one step:**
 ```bash
@@ -167,7 +179,7 @@ harness fail 16 3
 ## Tips for autonomous operation
 
 - **Always start with `harness scan`** — it checks for open issues automatically before returning ecosystem facts. No need to run `harness history` separately first.
-- **`harness scan` never prompts** — it always outputs JSON. You decide the goal.
+- **`harness scan` never prompts** — it always outputs JSON. When there are no open issues, you inspect the repo, form recommendations, and ask the user before opening anything.
 - **Always run `harness context <issue>` before resuming** — read what was tried before trying the same thing again.
 - **One goal per issue, make it specific** — "Fix TypeScript error on line 42 of utils.ts" beats "Fix TypeScript".
 - **Log every attempt** — comments are permanent context for future agents and humans.

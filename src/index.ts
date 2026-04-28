@@ -204,7 +204,7 @@ if (command === 'scan') {
     out({
       ecosystem: result.ecosystem,
       config:    result.config,
-      next:      `harness open "<your goal>" --repo ${repo} --workdir ${result.config.workdir ?? path.resolve(workdir)}`,
+      next:      `inspect the repo, form 2-4 specific improvement recommendations, ask the user which to pursue, then: harness open "<chosen goal>" --repo ${repo} --workdir ${result.config.workdir ?? path.resolve(workdir)}`,
     });
   }
   process.exit(0);
