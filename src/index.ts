@@ -21,12 +21,22 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+// Suppress Node.js-level deprecation warnings emitted by @octokit/request
+// when GitHub returns a Deprecation response header. These are years-out
+// notices, not actionable errors, and they pollute agent stderr output.
+process.on('warning', (w) => {
+  if (w.name === 'DeprecationWarning' && w.message.includes('@octokit')) return;
+  process.stderr.write(`${w.name}: ${w.message}\n`);
+});
+import { parseArgs, flag, flags } from './args.js';
 import { check, formatCheckResult } from './checker.js';
 import {
   openIssue, addComment, closeAsSucceeded, markAsFailed,
   getContext, listIssues,
 } from './reporter.js';
 import { scan } from './scanner.js';
+import type { Args } from './args.js';
 import type { HarnessConfig, Assertion } from './types.js';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
@@ -62,43 +72,6 @@ function installSkill(): void {
 }
 
 
-// ---------------------------------------------------------------------------
-// Simple flag parser: --key value, --key value1 --key value2 for multi-value
-// ---------------------------------------------------------------------------
-
-interface Args {
-  positional: string[];
-  flags: Record<string, string[]>;
-}
-
-function parseArgs(argv: string[]): Args {
-  const positional: string[] = [];
-  const flags: Record<string, string[]> = {};
-
-  let i = 0;
-  while (i < argv.length) {
-    const arg = argv[i]!;
-    if (arg.startsWith('--')) {
-      const key = arg.slice(2);
-      const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--')) {
-        flags[key] = [...(flags[key] ?? []), next];
-        i += 2;
-      } else {
-        flags[key] = [...(flags[key] ?? []), 'true'];
-        i += 1;
-      }
-    } else {
-      positional.push(arg);
-      i++;
-    }
-  }
-
-  return { positional, flags };
-}
-
-function flag(args: Args, key: string): string | undefined  { return args.flags[key]?.[0]; }
-function flags(args: Args, key: string): string[]           { return args.flags[key] ?? []; }
 
 // ---------------------------------------------------------------------------
 // Help

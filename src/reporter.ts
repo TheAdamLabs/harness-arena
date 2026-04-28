@@ -35,13 +35,23 @@ const CONFIG_CLOSE = '\n-->';
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Octokit logs deprecation notices for endpoints that are scheduled for
+// removal years in the future. These are noise for agent stderr output.
+// Real errors still go through process.stderr via the `safe()` wrapper.
+const silentLog = {
+  debug: () => {},
+  info:  () => {},
+  warn:  () => {},
+  error: () => {},
+};
+
 function makeClient(): Octokit | null {
   const token = process.env['GITHUB_TOKEN'];
   if (!token) {
     process.stderr.write('[harness] GITHUB_TOKEN not set — GitHub reporting disabled\n');
     return null;
   }
-  return new Octokit({ auth: token });
+  return new Octokit({ auth: token, log: silentLog });
 }
 
 function parseRepo(slug: string): { owner: string; repo: string } {
