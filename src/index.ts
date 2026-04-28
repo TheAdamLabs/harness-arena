@@ -22,11 +22,18 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// Suppress Node.js-level deprecation warnings emitted by @octokit/request
-// when GitHub returns a Deprecation response header. These are years-out
-// notices, not actionable errors, and they pollute agent stderr output.
+// Suppress @octokit deprecation notices. They come via two channels:
+//   1. console.warn() from the `deprecation` package ("[@octokit/request] ... is deprecated")
+//   2. process.emitWarning() in some Node.js versions
+// Both are years-out API-sunset notices, not actionable errors.
+const _origWarn = console.warn.bind(console);
+console.warn = (...args: unknown[]) => {
+  const msg = args.map(String).join(' ');
+  if (msg.includes('@octokit') && msg.includes('deprecated')) return;
+  _origWarn(...args);
+};
 process.on('warning', (w) => {
-  if (w.name === 'DeprecationWarning' && w.message.includes('@octokit')) return;
+  if (w.message.includes('@octokit') && w.message.includes('deprecated')) return;
   process.stderr.write(`${w.name}: ${w.message}\n`);
 });
 
