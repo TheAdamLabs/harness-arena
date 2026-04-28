@@ -1,49 +1,20 @@
 // ---------------------------------------------------------------------------
-// Step definitions — every action the harness can execute
-// ---------------------------------------------------------------------------
-
-export interface ShellStep {
-  type: 'shell';
-  command: string;
-  /** Working directory override (relative to task.workdir or cwd). */
-  cwd?: string;
-  /** Extra env vars merged onto process.env. */
-  env?: Record<string, string>;
-  /** Milliseconds before the step is killed. Default: 60 000. */
-  timeout?: number;
-}
-
-export interface FileWriteStep {
-  type: 'file';
-  action: 'write' | 'append';
-  path: string;
-  content: string;
-}
-
-export interface FileDeleteStep {
-  type: 'file';
-  action: 'delete';
-  path: string;
-}
-
-export type FileStep = FileWriteStep | FileDeleteStep;
-
-export type Step = ShellStep | FileStep;
-
-// ---------------------------------------------------------------------------
-// Assertion definitions — checked after all steps pass
+// Assertions — what harness verifies autonomously.
+// The AI agent decides HOW to achieve the goal; harness checks WHETHER it did.
 // ---------------------------------------------------------------------------
 
 export interface ShellAssertion {
   type: 'shell';
+  /** Command to run. Exit code + output are checked. */
   command: string;
+  /** Working directory override (resolved relative to task.workdir or cwd). */
   cwd?: string;
   expect: {
-    /** Process exit code. Default: 0. */
+    /** Expected exit code. Default: 0. */
     exitCode?: number;
-    /** stdout or stderr must include this string. */
+    /** Combined stdout+stderr must include this string. */
     contains?: string;
-    /** stdout or stderr must NOT include this string. */
+    /** Combined stdout+stderr must NOT include this string. */
     notContains?: string;
   };
 }
@@ -61,57 +32,38 @@ export interface FileAssertion {
 export type Assertion = ShellAssertion | FileAssertion;
 
 // ---------------------------------------------------------------------------
-// Task — the unit of work an AI agent authors and the harness executes
+// Task — authored by the AI agent, handed to harness for tracking
 // ---------------------------------------------------------------------------
 
 export interface Task {
   /** Human-readable goal; becomes the GitHub Issue title. */
   goal: string;
-  /** Target GitHub repo for issue observability (owner/repo). */
+  /** Target GitHub repo for observability (owner/repo). */
   repo?: string;
-  /** Ordered steps to execute. */
-  steps: Step[];
-  /** Assertions evaluated after all steps succeed. */
-  assertions?: Assertion[];
-  /** How many full attempts before giving up. Default: 3. */
-  maxRetries?: number;
-  /** Absolute or relative base working directory for shell steps. */
+  /** Base directory for assertion commands and file paths. Default: cwd. */
   workdir?: string;
+  /** Conditions that must all pass for the task to be considered done. */
+  assertions?: Assertion[];
 }
 
 // ---------------------------------------------------------------------------
-// Execution results — surfaced in GitHub Issue comments and stdout
+// Results returned by checker and CLI commands
 // ---------------------------------------------------------------------------
-
-export interface StepResult {
-  index: number;
-  step: Step;
-  ok: boolean;
-  stdout?: string;
-  stderr?: string;
-  exitCode?: number;
-  error?: string;
-  /** Elapsed time in milliseconds. */
-  durationMs: number;
-}
 
 export interface AssertionResult {
+  ok: boolean;
   assertion: Assertion;
-  ok: boolean;
-  reason?: string;
+  /** Human-readable explanation when ok is false. */
+  reason?: string | undefined;
 }
 
-export interface AttemptResult {
-  attempt: number;
+export interface CheckResult {
   ok: boolean;
-  stepResults: StepResult[];
-  assertionResults: AssertionResult[];
-  /** First error that caused the attempt to abort, if any. */
-  error?: string | undefined;
+  results: AssertionResult[];
 }
 
-export interface TaskResult {
-  ok: boolean;
-  attempts: number;
-  issueUrl?: string | undefined;
+export interface IssueHandle {
+  /** Issue number as a string, e.g. "42". */
+  number: string;
+  url: string;
 }

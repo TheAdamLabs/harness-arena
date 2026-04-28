@@ -1,17 +1,30 @@
 #!/usr/bin/env node
 /**
- * harness — self-correcting task executor for AI coding agents.
+ * harness — self-correcting loop coordinator for AI coding agents.
  *
- * Usage:
- *   harness run <task.json>     Execute a task with retries and GitHub observability
- *   harness validate <task.json> Check task JSON is well-formed without running it
- *   harness help                Show this help
+ * The AI agent authors tasks and does the actual work.
+ * harness handles GitHub Issues observability and assertion verification.
+ *
+ * Commands:
+ *   harness open   <task.json>                    Open a tracking GitHub Issue
+ *   harness check  <task.json>                    Run assertions, print PASS/FAIL
+ *   harness log    <issue-number> <message>       Add a comment to the issue
+ *   harness done   <issue-number> <attempts>      Close issue as succeeded
+ *   harness fail   <issue-number> <attempts>      Mark issue as failed (leave open)
+ *   harness help                                  Show this help
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
-import { run } from './runner.js';
+import { fileURLToPath } from 'url';
+import { check, formatCheckResult } from './checker.js';
+import { openIssue, addComment, closeAsSucceeded, markAsFailed } from './reporter.js';
 import type { Task } from './types.js';
+
+const __dir = path.dirname(fileURLToPath(import.meta.url));
+const SKILL_SRC  = path.resolve(__dir, '../SKILL.md');
+const SKILL_DEST = path.join(os.homedir(), '.cursor', 'skills', 'harness-arena', 'SKILL.md');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -19,9 +32,12 @@ import type { Task } from './types.js';
 
 function die(msg: string): never {
   process.stderr.write(`harness: ${msg}\n`);
-  // eslint-disable-next-line no-process-exit
   process.exit(1) as never;
   throw new Error('unreachable');
+}
+
+function out(data: unknown): void {
+  process.stdout.write(JSON.stringify(data, null, 2) + '\n');
 }
 
 function readTask(filePath: string): Task {
@@ -30,7 +46,7 @@ function readTask(filePath: string): Task {
   try {
     raw = fs.readFileSync(resolved, 'utf8');
   } catch {
-    die(`cannot read file: ${resolved}`);
+    die(`cannot read task file: ${resolved}`);
   }
 
   let task: unknown;
@@ -43,88 +59,83 @@ function readTask(filePath: string): Task {
   if (typeof task !== 'object' || task === null) die('task must be a JSON object');
   const t = task as Record<string, unknown>;
   if (typeof t['goal'] !== 'string' || !t['goal']) die('task.goal must be a non-empty string');
-  if (!Array.isArray(t['steps'])) die('task.steps must be an array');
 
   return t as unknown as Task;
 }
 
-function validateTask(task: Task, filePath: string): void {
-  const errors: string[] = [];
+function getRepo(task: Task): string | undefined {
+  return task.repo ?? process.env['GITHUB_REPO'];
+}
 
-  for (let i = 0; i < task.steps.length; i++) {
-    const s = task.steps[i]!;
-    if (s.type !== 'shell' && s.type !== 'file') {
-      errors.push(`step ${i + 1}: unknown type "${(s as { type: string }).type}" (must be "shell" or "file")`);
-    }
-    if (s.type === 'shell' && !s.command) {
-      errors.push(`step ${i + 1}: shell step missing "command"`);
-    }
-    if (s.type === 'file' && !s.path) {
-      errors.push(`step ${i + 1}: file step missing "path"`);
-    }
-  }
-
-  for (let i = 0; i < (task.assertions ?? []).length; i++) {
-    const a = (task.assertions ?? [])[i]!;
-    if (a.type !== 'shell' && a.type !== 'file') {
-      errors.push(`assertion ${i + 1}: unknown type "${(a as { type: string }).type}"`);
-    }
-  }
-
-  if (errors.length > 0) {
-    process.stderr.write(`harness: validation errors in ${filePath}:\n`);
-    for (const e of errors) process.stderr.write(`  • ${e}\n`);
-    process.exit(1);
-  }
-
-  process.stdout.write(`harness: ${filePath} is valid (${task.steps.length} steps, ${task.assertions?.length ?? 0} assertions)\n`);
+function installSkill(): void {
+  try {
+    if (!fs.existsSync(SKILL_SRC)) return;
+    fs.mkdirSync(path.dirname(SKILL_DEST), { recursive: true });
+    fs.copyFileSync(SKILL_SRC, SKILL_DEST);
+  } catch { /* non-fatal */ }
 }
 
 function printHelp(): void {
   process.stdout.write(`
-harness — self-correcting task executor for AI coding agents
+harness — self-correcting loop coordinator for AI coding agents
 
-USAGE
-  harness run <task.json>        Execute a task
-  harness validate <task.json>   Validate task without running
-  harness help                   Show this help
+The AI agent does the work. harness tracks it on GitHub and verifies success.
 
-TASK FORMAT (JSON)
+COMMANDS
+
+  harness open <task.json>
+    Open a GitHub Issue for this task. Prints { number, url }.
+    Sets label harness:running. Creates labels if missing.
+
+  harness check <task.json>
+    Run all assertions in the task. Prints pass/fail per assertion.
+    Exit code 0 = all pass, 1 = at least one fails.
+
+  harness log <issue-number> <message>
+    Add a comment to the tracking issue (progress, errors, attempts).
+
+  harness done <issue-number> <attempts>
+    Close the issue as succeeded. Swaps label to harness:succeeded.
+
+  harness fail <issue-number> <attempts>
+    Mark the issue as failed (leave open). Swaps label to harness:failed.
+
+  harness help
+    Show this help.
+
+TASK FORMAT
+
   {
-    "goal":       "string — human-readable goal (becomes GitHub issue title)",
-    "repo":       "owner/repo — GitHub repo for issue observability (optional)",
-    "workdir":    "/path — base directory for all steps (default: cwd)",
-    "maxRetries": 3,
-    "steps": [
-      { "type": "shell", "command": "npm test", "timeout": 60000 },
-      { "type": "file",  "action": "write", "path": "out.txt", "content": "..." }
-    ],
+    "goal":       "Fix all TypeScript type errors in src/",
+    "repo":       "owner/repo",
+    "workdir":    "/path/to/repo",
     "assertions": [
-      { "type": "shell", "command": "npm test", "expect": { "exitCode": 0 } },
-      { "type": "file",  "path": "dist/index.js", "expect": { "exists": true } }
+      { "type": "shell", "command": "npx tsc --noEmit", "expect": { "exitCode": 0 } },
+      { "type": "shell", "command": "npm test",         "expect": { "exitCode": 0 } },
+      { "type": "file",  "path": "dist/index.js",       "expect": { "exists": true } }
     ]
   }
 
-STEP TYPES
-  shell   Run any shell command. Captures stdout, stderr, exit code.
-  file    write | append | delete a file.
+ASSERTION TYPES
 
-ASSERTION EXPECTS (shell)
-  exitCode      number   Process must exit with this code (default: 0)
-  contains      string   stdout+stderr must include this string
-  notContains   string   stdout+stderr must NOT include this string
-
-ASSERTION EXPECTS (file)
-  exists        boolean  File must/must not exist
-  contains      string   File content must include this string
-  notContains   string   File content must NOT include this string
+  shell  { command, cwd?, expect: { exitCode?, contains?, notContains? } }
+  file   { path, expect: { exists?, contains?, notContains? } }
 
 ENVIRONMENT
-  GITHUB_REPO   Fallback repo if task.repo is not set (owner/repo)
 
-EXIT CODES
-  0   Task succeeded
-  1   Task failed or validation error
+  GITHUB_TOKEN   Required for GitHub API access
+  GITHUB_REPO    Fallback repo (owner/repo) if task.repo is not set
+
+LOOP PATTERN (for AI agents — see SKILL.md for full guide)
+
+  1. Write task.json with goal + assertions
+  2. harness open task.json          → { number, url }
+  3. Do the actual work (edit files, run commands, etc.)
+  4. harness check task.json         → PASS or FAIL
+  5. harness log <number> "<notes>"
+  6. If PASS:  harness done <number> <attempt>
+     If FAIL and retries left: go to step 3
+     If FAIL and out of retries: harness fail <number> <attempt>
 `);
 }
 
@@ -132,33 +143,75 @@ EXIT CODES
 // Entry
 // ---------------------------------------------------------------------------
 
-const [,, command, argument] = process.argv;
+installSkill();
+
+const [,, command, arg1, arg2] = process.argv;
 
 if (!command || command === 'help' || command === '--help' || command === '-h') {
   printHelp();
   process.exit(0);
 }
 
-if (command === 'validate') {
-  if (!argument) die('validate requires a task file path');
-  const task = readTask(argument);
-  validateTask(task, argument);
+// --- open -------------------------------------------------------------------
+if (command === 'open') {
+  if (!arg1) die('open requires a task file path\n  Usage: harness open <task.json>');
+  const task = readTask(arg1);
+  const repo = getRepo(task);
+
+  if (!repo) {
+    die('no repo specified — set task.repo or GITHUB_REPO env var');
+  }
+
+  const handle = await openIssue(task, repo);
+  if (!handle) die('failed to open GitHub issue (check GITHUB_TOKEN and repo access)');
+
+  out(handle);
   process.exit(0);
 }
 
-if (command === 'run') {
-  if (!argument) die('run requires a task file path');
-  const task = readTask(argument);
+// --- check ------------------------------------------------------------------
+if (command === 'check') {
+  if (!arg1) die('check requires a task file path\n  Usage: harness check <task.json>');
+  const task = readTask(arg1);
+  const result = await check(task);
 
-  // Allow GITHUB_REPO env as fallback repo
-  if (!task.repo && process.env['GITHUB_REPO']) {
-    task.repo = process.env['GITHUB_REPO'];
-  }
-
-  const result = await run(task);
-
-  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+  process.stdout.write(formatCheckResult(result) + '\n');
+  out(result);
   process.exit(result.ok ? 0 : 1);
+}
+
+// --- log --------------------------------------------------------------------
+if (command === 'log') {
+  if (!arg1 || !arg2) die('log requires issue number and message\n  Usage: harness log <number> "<message>"');
+  const task_repo = process.env['GITHUB_REPO'];
+  if (!task_repo) die('GITHUB_REPO env var required for log command');
+
+  await addComment(task_repo, arg1, arg2);
+  process.exit(0);
+}
+
+// --- done -------------------------------------------------------------------
+if (command === 'done') {
+  if (!arg1) die('done requires an issue number\n  Usage: harness done <number> [attempts]');
+  const repo = process.env['GITHUB_REPO'];
+  if (!repo) die('GITHUB_REPO env var required for done command');
+
+  const attempts = arg2 ? Number(arg2) : 1;
+  await closeAsSucceeded(repo, arg1, attempts);
+  process.stdout.write(`[harness] Issue #${arg1} closed as succeeded.\n`);
+  process.exit(0);
+}
+
+// --- fail -------------------------------------------------------------------
+if (command === 'fail') {
+  if (!arg1) die('fail requires an issue number\n  Usage: harness fail <number> [attempts]');
+  const repo = process.env['GITHUB_REPO'];
+  if (!repo) die('GITHUB_REPO env var required for fail command');
+
+  const attempts = arg2 ? Number(arg2) : 1;
+  await markAsFailed(repo, arg1, attempts);
+  process.stdout.write(`[harness] Issue #${arg1} marked as failed.\n`);
+  process.exit(0);
 }
 
 die(`unknown command "${command}". Run "harness help" for usage.`);

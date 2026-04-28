@@ -1,163 +1,162 @@
 /**
  * reporter.ts
  *
- * GitHub Issues observability via the `gh` CLI.
- * Every call is fire-and-forget — failures are logged but never thrown,
- * so a broken gh auth never crashes the harness.
+ * GitHub Issues observability via @octokit/rest.
+ * All methods are fire-and-forget — errors are logged but never thrown,
+ * so a bad token or network hiccup never crashes the calling agent.
  */
 
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import type { Task, AttemptResult, StepResult } from './types.js';
+import { Octokit } from '@octokit/rest';
+import type { Task, IssueHandle } from './types.js';
 
-const execFileAsync = promisify(execFile);
+const LABELS = {
+  running:   { name: 'harness:running',   color: '0075ca', description: 'Harness task in progress' },
+  succeeded: { name: 'harness:succeeded', color: '0e8a16', description: 'Harness task succeeded' },
+  failed:    { name: 'harness:failed',    color: 'd93f0b', description: 'Harness task failed' },
+} as const;
 
-async function gh(repo: string, ...args: string[]): Promise<string | null> {
+function makeClient(): Octokit | null {
+  const token = process.env['GITHUB_TOKEN'];
+  if (!token) {
+    process.stderr.write('[harness] GITHUB_TOKEN not set — GitHub reporting disabled\n');
+    return null;
+  }
+  return new Octokit({ auth: token });
+}
+
+function parseRepo(repo: string): { owner: string; repo: string } {
+  const [owner, name] = repo.split('/');
+  if (!owner || !name) throw new Error(`invalid repo format "${repo}" — expected owner/repo`);
+  return { owner, repo: name };
+}
+
+async function safe<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
   try {
-    const { stdout } = await execFileAsync('gh', ['--repo', repo, ...args]);
-    return stdout.trim();
+    return await fn();
   } catch (err) {
-    process.stderr.write(`[reporter] gh ${args[0] ?? ''} failed: ${(err as Error).message}\n`);
+    process.stderr.write(`[harness] GitHub API error (${label}): ${(err as Error).message}\n`);
     return null;
   }
 }
 
-function issueUrl(repo: string, number: string): string {
-  return `https://github.com/${repo}/issues/${number}`;
-}
-
-function extractNumber(output: string | null): string | null {
-  const m = output?.match(/\/(\d+)$/);
-  return m ? (m[1] ?? null) : null;
-}
-
 // ---------------------------------------------------------------------------
-// Formatting helpers
+// Label bootstrap — idempotent, called on open
 // ---------------------------------------------------------------------------
 
-function stepLabel(r: StepResult): string {
-  if (r.step.type === 'shell') {
-    return `\`${r.step.command.slice(0, 80)}\``;
+async function ensureLabels(octokit: Octokit, owner: string, repo: string): Promise<void> {
+  for (const l of Object.values(LABELS)) {
+    await safe(`ensureLabel:${l.name}`, () =>
+      octokit.issues.createLabel({ owner, repo, name: l.name, color: l.color, description: l.description })
+        .catch(async (err: { status?: number }) => {
+          if (err.status === 422) {
+            // Label already exists — update description/color in case they changed.
+            await octokit.issues.updateLabel({ owner, repo, name: l.name, color: l.color, description: l.description });
+          } else {
+            throw err;
+          }
+        })
+    );
   }
-  return `\`file:${r.step.action} ${r.step.path}\``;
-}
-
-function formatStepBlock(r: StepResult): string {
-  const lines: string[] = [];
-  const icon = r.ok ? '✅' : '❌';
-  lines.push(`${icon} **Step ${r.index + 1}:** ${stepLabel(r)} — ${r.durationMs}ms`);
-
-  if (!r.ok) {
-    if (r.stderr) lines.push('```\n' + r.stderr.slice(0, 1000) + '\n```');
-    if (r.error)  lines.push(`> ${r.error.slice(0, 300)}`);
-  }
-  return lines.join('\n');
-}
-
-function formatAttemptComment(result: AttemptResult, task: Task): string {
-  const lines: string[] = [
-    `### Attempt ${result.attempt}/${task.maxRetries ?? 3}`,
-    '',
-    '**Steps:**',
-    ...result.stepResults.map(formatStepBlock),
-  ];
-
-  if (result.assertionResults.length > 0) {
-    lines.push('', '**Assertions:**');
-    for (const a of result.assertionResults) {
-      const icon = a.ok ? '✅' : '❌';
-      const label = a.assertion.type === 'shell'
-        ? `\`${a.assertion.command.slice(0, 80)}\``
-        : `file \`${a.assertion.path}\``;
-      lines.push(`${icon} ${label}${a.reason ? ` — ${a.reason}` : ''}`);
-    }
-  }
-
-  if (result.error) {
-    lines.push('', `**Aborted:** \`${result.error.slice(0, 300)}\``);
-  }
-
-  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export interface IssueHandle {
-  number: string;
-  url: string;
-}
+export async function openIssue(task: Task, repoSlug: string): Promise<IssueHandle | null> {
+  const octokit = makeClient();
+  if (!octokit) return null;
 
-export async function openIssue(task: Task, repo: string): Promise<IssueHandle | null> {
+  const { owner, repo } = parseRepo(repoSlug);
+  await ensureLabels(octokit, owner, repo);
+
   const body = [
     `**Goal:** ${task.goal}`,
     '',
-    `**Steps:** ${task.steps.length} | **Assertions:** ${task.assertions?.length ?? 0} | **Max retries:** ${task.maxRetries ?? 3}`,
+    `**Assertions:** ${task.assertions?.length ?? 0}`,
+    task.workdir ? `**Workdir:** \`${task.workdir}\`` : '',
     '',
     '<details><summary>Full task definition</summary>',
     '',
     '```json',
     JSON.stringify(task, null, 2),
     '```',
-    '',
     '</details>',
-  ].join('\n');
+  ].filter((l) => l !== null).join('\n');
 
-  const out = await gh(
-    repo,
-    'issue', 'create',
-    '--title', `[harness] ${task.goal}`,
-    '--body', body,
-    '--label', 'harness:running',
+  const result = await safe('openIssue', () =>
+    octokit.issues.create({
+      owner,
+      repo,
+      title: `[harness] ${task.goal}`,
+      body,
+      labels: [LABELS.running.name],
+    })
   );
 
-  const number = extractNumber(out);
-  if (!number) return null;
-  return { number, url: issueUrl(repo, number) };
+  if (!result) return null;
+  return {
+    number: String(result.data.number),
+    url: result.data.html_url,
+  };
 }
 
-export async function commentAttempt(
-  handle: IssueHandle,
-  repo: string,
-  result: AttemptResult,
-  task: Task,
-): Promise<void> {
-  await gh(repo, 'issue', 'comment', handle.number, '--body', formatAttemptComment(result, task));
-}
+export async function addComment(repoSlug: string, issueNumber: string, body: string): Promise<void> {
+  const octokit = makeClient();
+  if (!octokit) return;
 
-export async function closeSuccess(handle: IssueHandle, repo: string, attempts: number): Promise<void> {
-  const body = `**Result: ✅ success** — completed in ${attempts} attempt(s).`;
-  await gh(repo, 'issue', 'comment', handle.number, '--body', body);
-  await gh(repo, 'issue', 'close', handle.number, '--comment', '');
-  await gh(repo, 'issue', 'edit', handle.number,
-    '--remove-label', 'harness:running',
-    '--add-label', 'harness:succeeded',
-  );
-}
-
-export async function markFailed(handle: IssueHandle, repo: string, maxRetries: number): Promise<void> {
-  const body = `**Result: ❌ failed** — exhausted ${maxRetries} attempt(s).`;
-  await gh(repo, 'issue', 'comment', handle.number, '--body', body);
-  await gh(repo, 'issue', 'edit', handle.number,
-    '--remove-label', 'harness:running',
-    '--add-label', 'harness:failed',
+  const { owner, repo } = parseRepo(repoSlug);
+  await safe('addComment', () =>
+    octokit.issues.createComment({
+      owner,
+      repo,
+      issue_number: Number(issueNumber),
+      body,
+    })
   );
 }
 
-export async function ensureLabels(repo: string): Promise<void> {
-  const labels = [
-    { name: 'harness:running',   color: '0075ca', desc: 'Harness task in progress' },
-    { name: 'harness:succeeded', color: '0e8a16', desc: 'Harness task completed successfully' },
-    { name: 'harness:failed',    color: 'd93f0b', desc: 'Harness task exhausted all retries' },
-  ];
+export async function closeAsSucceeded(repoSlug: string, issueNumber: string, attempts: number): Promise<void> {
+  const octokit = makeClient();
+  if (!octokit) return;
 
-  for (const l of labels) {
-    await gh(repo,
-      'label', 'create', l.name,
-      '--color', l.color,
-      '--description', l.desc,
-      '--force',
-    );
-  }
+  const { owner, repo } = parseRepo(repoSlug);
+  const num = Number(issueNumber);
+
+  await safe('closeComment', () =>
+    octokit.issues.createComment({
+      owner, repo, issue_number: num,
+      body: `**Result: ✅ succeeded** — completed in ${attempts} attempt(s).`,
+    })
+  );
+  await safe('closeIssue', () =>
+    octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' })
+  );
+  await safe('swapLabel', () =>
+    octokit.issues.setLabels({
+      owner, repo, issue_number: num,
+      labels: [LABELS.succeeded.name],
+    })
+  );
+}
+
+export async function markAsFailed(repoSlug: string, issueNumber: string, attempts: number): Promise<void> {
+  const octokit = makeClient();
+  if (!octokit) return;
+
+  const { owner, repo } = parseRepo(repoSlug);
+  const num = Number(issueNumber);
+
+  await safe('failComment', () =>
+    octokit.issues.createComment({
+      owner, repo, issue_number: num,
+      body: `**Result: ❌ failed** — exhausted ${attempts} attempt(s).`,
+    })
+  );
+  await safe('failLabel', () =>
+    octokit.issues.setLabels({
+      owner, repo, issue_number: num,
+      labels: [LABELS.failed.name],
+    })
+  );
 }
