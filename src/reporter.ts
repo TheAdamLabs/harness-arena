@@ -54,7 +54,7 @@ function makeClient(): Octokit | null {
   return new Octokit({ auth: token, log: silentLog });
 }
 
-function parseRepo(slug: string): { owner: string; repo: string } {
+export function parseRepo(slug: string): { owner: string; repo: string } {
   const [owner, name] = slug.split('/');
   if (!owner || !name) throw new Error(`invalid repo "${slug}" — expected owner/repo`);
   return { owner, repo: name };
@@ -69,7 +69,7 @@ async function safe<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
-function labelStatus(labels: Array<{ name?: string }>): IssueSummary['status'] {
+export function labelStatus(labels: Array<{ name?: string }>): IssueSummary['status'] {
   const names = labels.map((l) => l.name ?? '');
   if (names.includes('harness:succeeded')) return 'succeeded';
   if (names.includes('harness:failed'))    return 'failed';
@@ -98,7 +98,7 @@ export function parseConfig(issueBody: string): HarnessConfig | null {
   }
 }
 
-function buildIssueBody(goal: string, config: HarnessConfig): string {
+export function buildIssueBody(goal: string, config: HarnessConfig): string {
   const assertionCount = config.assertions.length;
   const lines = [
     `**Goal:** ${goal}`,

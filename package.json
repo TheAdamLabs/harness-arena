@@ -2,6 +2,13 @@
   "name": "harness-arena",
   "version": "0.1.0",
   "description": "Self-correcting task executor for AI coding agents — reliable execution, GitHub Issues observability.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/theadamlabs/harness-arena.git"
+  },
+  "homepage": "https://github.com/theadamlabs/harness-arena#readme",
+  "keywords": ["ai", "agent", "autonomous", "github-issues", "cli", "harness", "cursor"],
   "type": "module",
   "bin": {
     "harness": "./dist/index.js"
