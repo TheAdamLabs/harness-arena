@@ -61,6 +61,7 @@ function installSkill(): void {
   } catch { /* non-fatal */ }
 }
 
+
 // ---------------------------------------------------------------------------
 // Simple flag parser: --key value, --key value1 --key value2 for multi-value
 // ---------------------------------------------------------------------------
@@ -177,20 +178,35 @@ if (!command || command === 'help' || command === '--help' || command === '-h') 
 
 // --- scan -------------------------------------------------------------------
 if (command === 'scan') {
-  const workdir = args.positional[0] ?? '.';
-  const repo    = getRepo(flag(args, 'repo'));
-  const goal    = flag(args, 'goal');
+  const workdir  = args.positional[0] ?? '.';
+  const goalFlag = flag(args, 'goal');
+  const repoFlag = flag(args, 'repo');
+  const repo     = getRepo(repoFlag);
 
-  const result = scan(workdir, goal);
+  // Check for existing open issues first — avoid duplicating work.
+  const existing = (await listIssues(repo)).filter((i) => i.status === 'running');
+  if (existing.length > 0) {
+    process.stderr.write(`[harness] ${existing.length} open issue(s) already in progress — resume before starting new work\n`);
+    out({ existing, next: `harness context <issue-number> --repo ${repo}` });
+    process.exit(0);
+  }
+
+  const result = scan(workdir, goalFlag);
   if (!result) die(`could not detect ecosystem in ${path.resolve(workdir)}`);
 
-  process.stderr.write(`[harness] detected: ${result.ecosystem}\n`);
-  process.stderr.write(`[harness] goal: ${result.goal}\n`);
-
-  const handle = await openIssue(result.goal, result.config, repo);
-  if (!handle) die('failed to open GitHub issue');
-
-  out({ ...handle, ecosystem: result.ecosystem });
+  // Always print scan facts. If --goal was given, open the issue immediately.
+  // Without --goal, let the agent decide the goal and call `harness open`.
+  if (goalFlag) {
+    const handle = await openIssue(goalFlag, result.config, repo);
+    if (!handle) die('failed to open GitHub issue');
+    out({ ...handle, ecosystem: result.ecosystem });
+  } else {
+    out({
+      ecosystem: result.ecosystem,
+      config:    result.config,
+      next:      `harness open "<your goal>" --repo ${repo} --workdir ${result.config.workdir ?? path.resolve(workdir)}`,
+    });
+  }
   process.exit(0);
 }
 

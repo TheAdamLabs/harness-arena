@@ -143,11 +143,12 @@ function detect(dir: string): EcosystemMatch[] {
 
 export interface ScanResult {
   ecosystem: string;
-  goal: string;
+  /** Set only when a goal was explicitly provided. */
+  goal?: string | undefined;
   config: HarnessConfig;
 }
 
-export function scan(workdir: string, goalOverride?: string): ScanResult | null {
+export function scan(workdir: string, goal?: string): ScanResult | null {
   const absDir = path.resolve(workdir);
 
   if (!fs.existsSync(absDir)) return null;
@@ -155,14 +156,9 @@ export function scan(workdir: string, goalOverride?: string): ScanResult | null 
   const matches = detect(absDir);
   if (matches.length === 0) return null;
 
-  // Merge all detected assertions into a single config.
-  const combined = matches.flatMap((m) => m.assertions);
-  const ecosystem = matches.map((m) => m.name).join(' + ');
-  const goal = goalOverride ?? matches[0]!.goal;
-
   return {
-    ecosystem,
+    ecosystem: matches.map((m) => m.name).join(' + '),
     goal,
-    config: { workdir: absDir, assertions: combined },
+    config: { workdir: absDir, assertions: matches.flatMap((m) => m.assertions) },
   };
 }

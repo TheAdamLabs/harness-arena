@@ -43,35 +43,42 @@ harness fail    <issue>  [attempts]                 # mark as failed (leave open
 
 ## The autonomous improvement loop
 
-### Step 1 — Orient yourself
+### Step 1 — Scan (orient + start in one command)
 
-Before starting anything, check existing work to avoid duplication:
-
-```bash
-harness history --repo owner/repo
-# → ✅ #12  Fix TypeScript errors            2026-04-28
-# → 🔄 #14  Add missing JSDoc                2026-04-28
-# → ❌ #11  Add rate limiting middleware      2026-04-27
-```
-
-To resume a failed or in-progress issue, read its history first:
-
-```bash
-harness context 14
-# → { goal, config, status, attempts: [ "Attempt 1: ...", "Attempt 2: ..." ] }
-```
-
-### Step 2 — Start a new task
-
-**Auto-detect ecosystem (recommended for any project):**
+`harness scan` is the entry point. It checks for existing open work first, then returns ecosystem facts if the slate is clean:
 
 ```bash
 harness scan ./my-repo --repo owner/repo
-# detects TypeScript/Node/Rust/Python/Go/Makefile automatically
-# → { number: "15", url: "...", ecosystem: "TypeScript / Node.js", goal: "Ensure all checks pass" }
 ```
 
-**Custom goal with inline assertions:**
+**Case A — open issues already exist (resume, don't duplicate):**
+```json
+{
+  "existing": [{ "number": 14, "goal": "Add missing JSDoc", "status": "running" }],
+  "next": "harness context 14 --repo owner/repo"
+}
+```
+→ Read that context, then continue from Step 3.
+
+**Case B — no open issues (start fresh):**
+```json
+{
+  "ecosystem": "TypeScript / Node.js",
+  "config": { "workdir": "/path/to/repo", "assertions": [...] },
+  "next": "harness open \"<your goal>\" --repo owner/repo --workdir /path/to/repo"
+}
+```
+→ Inspect the repo, decide a specific goal, then call `harness open`.
+
+**Shortcut — scan + open in one step:**
+```bash
+harness scan ./my-repo --repo owner/repo --goal "Fix all TypeScript errors in src/"
+# → { number: "15", url: "...", ecosystem: "TypeScript / Node.js" }
+```
+
+### Step 2 — Open an issue (when scan returns no open work)
+
+Use `harness open` for custom assertions or when you already know the goal:
 
 ```bash
 harness open "Add JSDoc to all public functions in src/api.ts" \
@@ -82,9 +89,18 @@ harness open "Add JSDoc to all public functions in src/api.ts" \
 # → { number: "16", url: "..." }
 ```
 
-Both commands deduplicate automatically — if an open issue with the same goal already exists, the existing issue is returned.
+`harness open` also deduplicates — if an open issue with the same goal exists, it returns that issue instead of creating a new one.
 
-### Step 3 — Do the actual work
+### Step 3 — Resume an in-progress issue
+
+Before touching code, always read the full history to avoid repeating failed attempts:
+
+```bash
+harness context 14
+# → { goal, config, status, attempts: [ "Attempt 1: ...", "Attempt 2: ..." ] }
+```
+
+### Step 4 — Do the actual work
 
 This is entirely your responsibility. Read files, edit code, run commands:
 
@@ -99,7 +115,7 @@ cat /path/to/repo/src/api.ts
 cd /path/to/repo && npx tsc --noEmit
 ```
 
-### Step 4 — Verify with harness
+### Step 5 — Verify with harness
 
 ```bash
 harness check 16
@@ -112,7 +128,7 @@ harness check 16
 
 The JSON output includes full `stdout`/`stderr` per assertion — no second round-trip needed to understand the failure.
 
-### Step 5 — Log and close or retry
+### Step 6 — Log and close or retry
 
 **All assertions pass:**
 ```bash
@@ -150,7 +166,8 @@ harness fail 16 3
 
 ## Tips for autonomous operation
 
-- **Always run `harness history` first** — don't open duplicate issues.
+- **Always start with `harness scan`** — it checks for open issues automatically before returning ecosystem facts. No need to run `harness history` separately first.
+- **`harness scan` never prompts** — it always outputs JSON. You decide the goal.
 - **Always run `harness context <issue>` before resuming** — read what was tried before trying the same thing again.
 - **One goal per issue, make it specific** — "Fix TypeScript error on line 42 of utils.ts" beats "Fix TypeScript".
 - **Log every attempt** — comments are permanent context for future agents and humans.

@@ -7,13 +7,15 @@ The GitHub Issue is the single source of truth — no local task files. Any agen
 ```mermaid
 flowchart TD
     subgraph agent [AI Agent]
-        orient["harness history\nharness context"]
+        decide["Inspect repo\nDecide goal"]
         work["Make improvements\nedit files, fix errors"]
         next["Pick next improvement"]
     end
 
     subgraph harness_cli [harness CLI]
-        scan["harness scan\nharness open"]
+        scan["harness scan\n─────────────\nChecks open issues first.\nReturns ecosystem facts\nif slate is clean."]
+        open["harness open &lt;goal&gt;"]
+        context["harness context"]
         check["harness check"]
         logCmd["harness log"]
         done["harness done"]
@@ -26,22 +28,24 @@ flowchart TD
         failed(["#N open\nharness:failed"])
     end
 
-    orient -->|"no prior issue"| scan
-    orient -->|"existing issue"| work
-    scan --> running
+    next --> scan
+    scan -->|"open issues exist"| context
+    context --> work
+    scan -->|"no open issues\nreturns ecosystem JSON"| decide
+    decide --> open
+    open --> running
     running --> work
     work --> check
     check -->|"all pass"| logCmd
     logCmd -->|success| done
     done --> succeeded
     succeeded --> next
-    next --> orient
 
     check -->|"assertion failed"| logCmd
     logCmd -->|"retries left"| work
     logCmd -->|"no retries"| failCmd
     failCmd --> failed
-    failed -.->|"agent picks up later"| orient
+    failed -.->|"agent picks up later"| scan
 ```
 
 No LLM bundled. Bring your own agent (Cursor, Claude Code, any coding AI).
@@ -64,7 +68,7 @@ Requires `GITHUB_TOKEN` for GitHub Issues and `GITHUB_REPO=owner/repo` as defaul
 ## Commands
 
 ```bash
-harness scan    <workdir> [--repo R] [--goal "..."]       # auto-detect ecosystem → open issue
+harness scan    <workdir> [--repo R] [--goal "..."]       # check open issues; if clear, return ecosystem facts
 harness open    "<goal>"  --repo R [--assert "cmd"]...    # open issue with inline assertions
 harness check   <issue>  [--workdir override]             # run assertions, print PASS/FAIL + output
 harness log     <issue>   "<message>"                     # add comment (attempts, errors, notes)
@@ -133,7 +137,8 @@ The issue body stores everything harness needs in a hidden HTML comment:
 
 | Event             | GitHub action                                          |
 |-------------------|--------------------------------------------------------|
-| `harness scan/open` | Creates issue, embeds config, label `harness:running` |
+| `harness scan`    | Checks for open issues first; if any, returns them. If none, returns ecosystem JSON for agent to decide goal. |
+| `harness open`    | Creates issue, embeds config, label `harness:running`  |
 | Duplicate goal    | Returns existing open issue instead of creating new    |
 | `harness log`     | Adds comment (attempt details, errors, diffs)          |
 | `harness done`    | Closes issue, label `harness:succeeded`                |
