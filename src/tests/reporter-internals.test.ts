@@ -66,11 +66,11 @@ describe('safe()', () => {
 // ---------------------------------------------------------------------------
 
 describe('ensureLabels()', () => {
-  it('calls createLabel for each of the 3 harness labels', async () => {
+  it('calls createLabel for each of the 5 harness labels', async () => {
     const { octokit, calls } = makeOctokit();
     await ensureLabels(octokit, 'owner', 'repo');
     const creates = calls.filter((c) => c.method === 'createLabel');
-    assert.equal(creates.length, 3, 'should create 3 labels');
+    assert.equal(creates.length, 5, 'should create 5 labels');
   });
 
   it('calls updateLabel when createLabel returns 422', async () => {
@@ -82,7 +82,7 @@ describe('ensureLabels()', () => {
     });
     await ensureLabels(octokit, 'owner', 'repo');
     const updates = calls.filter((c) => c.method === 'updateLabel');
-    assert.equal(updates.length, 3, 'should update all 3 labels that already exist');
+    assert.equal(updates.length, 5, 'should update all 5 labels that already exist');
   });
 
   it('passes owner and repo to createLabel', async () => {
@@ -100,13 +100,13 @@ describe('ensureLabels()', () => {
 // ---------------------------------------------------------------------------
 
 describe('findExisting()', () => {
-  it('returns null when no matching issue found', async () => {
+  it('returns exact:null and empty similar when no issues found', async () => {
     const { octokit } = makeOctokit();
     const result = await findExisting(octokit, 'owner', 'repo', 'My goal');
-    assert.equal(result, null);
+    assert.deepEqual(result, { exact: null, similar: [] });
   });
 
-  it('returns issue handle when title matches', async () => {
+  it('returns exact handle when title matches', async () => {
     const { octokit } = makeOctokit({
       listForRepo: async () => ({
         data: [
@@ -116,13 +116,12 @@ describe('findExisting()', () => {
     });
     const result = await findExisting(octokit, 'owner', 'repo', 'My goal');
     assert.deepEqual(result, {
-      number: '42',
-      url: 'https://github.com/owner/repo/issues/42',
-      goal: 'My goal',
+      exact: { number: '42', url: 'https://github.com/owner/repo/issues/42', goal: 'My goal' },
+      similar: [],
     });
   });
 
-  it('returns null when title does not match exactly', async () => {
+  it('returns exact:null when title does not match exactly', async () => {
     const { octokit } = makeOctokit({
       listForRepo: async () => ({
         data: [
@@ -131,14 +130,30 @@ describe('findExisting()', () => {
       }),
     });
     const result = await findExisting(octokit, 'owner', 'repo', 'My goal');
-    assert.equal(result, null);
+    assert.deepEqual(result, { exact: null, similar: [] });
   });
 
-  it('returns null when listForRepo fails', async () => {
+  it('reports similar issues with >=50% word overlap', async () => {
+    const { octokit } = makeOctokit({
+      listForRepo: async () => ({
+        data: [
+          { number: 7, title: '[harness] reduce polling overhead', html_url: 'https://github.com/owner/repo/issues/7' },
+        ],
+      }),
+    });
+    // "reduce polling" vs "reduce polling overhead" — high overlap
+    const result = await findExisting(octokit, 'owner', 'repo', 'reduce polling');
+    assert.equal(result.exact, null);
+    assert.equal(result.similar.length, 1);
+    assert.equal(result.similar[0]?.number, '7');
+    assert.ok((result.similar[0]?.similarity ?? 0) >= 0.5);
+  });
+
+  it('returns empty similar and exact:null when listForRepo fails', async () => {
     const { octokit } = makeOctokit({
       listForRepo: async () => { throw new Error('API error'); },
     });
     const result = await findExisting(octokit, 'owner', 'repo', 'My goal');
-    assert.equal(result, null);
+    assert.deepEqual(result, { exact: null, similar: [] });
   });
 });

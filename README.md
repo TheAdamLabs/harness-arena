@@ -1,44 +1,53 @@
 # harness-arena
 
-**Autonomous repo improvement loop coordinator for AI coding agents.**
+**Make any software project continuously better — autonomously, across unlimited sessions and agents.**
 
-The GitHub Issue is the single source of truth — no local task files. Any agent on any machine picks up work by issue number alone.
+harness is a loop coordinator and GitHub Issues tracker for AI coding agents. The loop closes itself: scan → goal → work → verify → ship → scan again. Each closed issue leaves the codebase measurably better than before, and leaves a regression guard so it stays that way.
+
+No LLM bundled. Bring your own agent (Cursor, Claude Code, any coding AI).
 
 ```mermaid
 flowchart TD
     subgraph agent [AI Agent]
-        decide["Inspect repo\nDecide goal"]
-        work["Make improvements\nedit files, fix errors"]
+        decide["Inspect repo\nAsk user for goal"]
+        work["Make improvements\nedit files, run commands"]
         next["Pick next improvement"]
     end
 
     subgraph harness_cli [harness CLI]
-        scan["harness scan\n─────────────\nChecks open issues first.\nReturns ecosystem facts\nif slate is clean."]
-        open["harness open &lt;goal&gt;"]
+        scan["harness scan\n─────────────\n1. Run regression manifest\n2. Check open issues\n3. Return ecosystem facts"]
+        open["harness open &lt;goal&gt;\n──────────────\nbaseline run + type + dedup warn"]
+        observe["harness observe\n──────────────\nlog bug mid-run\n→ triage draft"]
         context["harness context"]
         check["harness check"]
-        logCmd["harness log"]
-        done["harness done"]
+        logCmd["harness log\n──────────\n--outcome --duration --files"]
+        done["harness done\n──────────\n+ writes regression manifest"]
         failCmd["harness fail"]
     end
 
-    subgraph github [GitHub Issue]
-        running(["#N: goal\nconfig + assertions\nharness:running"])
-        succeeded(["#N closed\nharness:succeeded"])
-        failed(["#N open\nharness:failed"])
+    subgraph github [GitHub Issues]
+        running(["#N running\ngoal + assertions\n+ baseline state"])
+        triage(["#N triage\nobservation draft"])
+        succeeded(["#N succeeded\nclosed ✅"])
+        failed(["#N failed\nopen for later"])
+        regression["HARNESS_REGRESSION.json\nassertions from closed issues"]
     end
 
     next --> scan
+    scan -->|"regressions detected"| decide
     scan -->|"open issues exist"| context
     context --> work
-    scan -->|"no open issues\nreturns ecosystem JSON"| decide
+    scan -->|"slate clean\nreturns ecosystem JSON"| decide
     decide --> open
     open --> running
     running --> work
+    work -->|"spotted out-of-scope bug"| observe
+    observe --> triage
     work --> check
     check -->|"all pass"| logCmd
-    logCmd -->|success| done
+    logCmd -->|"git push then"| done
     done --> succeeded
+    done --> regression
     succeeded --> next
 
     check -->|"assertion failed"| logCmd
@@ -46,38 +55,8 @@ flowchart TD
     logCmd -->|"no retries"| failCmd
     failCmd --> failed
     failed -.->|"agent picks up later"| scan
+    regression -.->|"checked on every scan"| scan
 ```
-
-No LLM bundled. Bring your own agent (Cursor, Claude Code, any coding AI).
-
----
-
-## Usage
-
-```bash
-# 1. Scan the repo — checks open issues first; returns ecosystem facts if clear
-harness scan ./my-repo --repo owner/repo
-
-# 2. Inspect the repo, decide a goal, open a tracking issue
-harness open "Fix all TypeScript strict errors" \
-  --repo owner/repo \
-  --workdir ./my-repo
-
-# 3. Read prior context before starting (skip on first attempt)
-harness context <issue>
-
-# 4. Do the work — edit files, run commands, sanity-check locally
-
-# 5. Verify assertions
-harness check <issue>
-
-# 6. Log what you did, push, then close
-harness log <issue> "Fixed 12 type errors across src/. tsc clean."
-git add -A && git commit -m "fix: resolve TypeScript strict errors" && git push
-harness done <issue> 1
-```
-
-See [SKILL.md](./SKILL.md) for the full autonomous loop guide.
 
 ---
 
@@ -90,22 +69,65 @@ npm install && npm run build
 npm install -g .
 ```
 
-Requires `GITHUB_TOKEN` for GitHub Issues and `GITHUB_REPO=owner/repo` as default repo.
+Requires `GITHUB_TOKEN` for GitHub Issues. `GITHUB_REPO=owner/repo` is optional — harness auto-detects the repo from `git remote get-url origin`.
+
+---
+
+## Usage
+
+```bash
+# 1. Scan — checks regressions, then open issues, then ecosystem
+harness scan ./my-repo
+
+# 2. Inspect repo, decide goal with the user, open a tracking issue
+#    (baseline run happens automatically; warns if similar issue exists)
+harness open "Fix all TypeScript strict errors" \
+  --workdir ./my-repo \
+  --type correctness \
+  --assert "npx tsc --noEmit"
+
+# 3. Read prior context before starting (skip on first attempt)
+harness context <issue>
+
+# 4. Do the work — edit files, run commands
+
+# 5. Mid-run: spotted a bug out of scope? Log it without derailing the active issue
+harness observe "scroll fails on LinkedIn inner container"
+
+# 6. Verify assertions
+harness check <issue>
+
+# 7. Log, push, then close — done appends assertions to HARNESS_REGRESSION.json
+harness log <issue> "Fixed 12 type errors." --outcome pass --duration 180 --files src/api.ts
+git add -A && git commit -m "fix: resolve TypeScript strict errors" && git push
+harness done <issue> 1
+```
+
+See [SKILL.md](./SKILL.md) for the full autonomous loop guide.
 
 ---
 
 ## Commands
 
 ```bash
-harness scan    <workdir> [--repo R] [--goal "..."]       # check open issues; if clear, return ecosystem facts
-harness open    "<goal>"  --repo R [--assert "cmd"]...    # open issue with inline assertions
-harness check   <issue>  [--workdir override]             # run assertions, print PASS/FAIL + output
-harness log     <issue>   "<message>"                     # add comment (attempts, errors, notes)
-harness context <issue>                                   # read goal + config + all prior attempts
-harness history [--repo R]                                # list all harness issues for the repo
-harness done    <issue>  [attempts]                       # close as succeeded
-harness fail    <issue>  [attempts]                       # mark as failed, leave open
-harness help                                              # full reference
+harness scan    <workdir> [--repo R] [--goal "..."]
+  # 1. Runs HARNESS_REGRESSION.json assertions (regressions from closed issues)
+  # 2. Checks for open harness issues → resume hint
+  # 3. Returns ecosystem facts for agent to decide goal
+  # With --goal: opens issue immediately (baseline run included)
+
+harness open    "<goal>" [--repo R] [--workdir P] [--type TYPE] [--assert "cmd"]...
+  # TYPE: fix | correctness | performance | workflow | spike
+  # Runs baseline before creating issue. Warns on fuzzy title match.
+
+harness check   <issue>  [--workdir override]    # run assertions, PASS/FAIL + stdout/stderr
+harness log     <issue>  "<message>" [--outcome pass|fail|blocked] [--duration <s>] [--files a,b]
+harness context <issue>                          # read goal + config + all prior attempts
+harness history [--repo R]                       # list all harness issues
+harness done    <issue>  [attempts]              # close ✅ + write to HARNESS_REGRESSION.json
+harness fail    <issue>  [attempts]              # mark ❌, leave open
+harness observe "<observation>" [--repo R]       # create triage draft mid-workflow
+harness help                                     # full reference
 ```
 
 ---
@@ -116,11 +138,13 @@ The issue body stores everything harness needs in a hidden HTML comment:
 
 ```
 <!-- harness:config
-{"workdir":"/path/to/repo","assertions":[{"type":"shell","command":"npx tsc --noEmit","expect":{"exitCode":0}}]}
+{"workdir":"/path/to/repo","assertions":[{"type":"shell","command":"npx tsc --noEmit","expect":{"exitCode":0}}],"type":"correctness"}
 -->
 ```
 
-`harness check 42` fetches issue #42, extracts the config, runs the assertions, and returns the full result including stdout/stderr — so the agent immediately sees what failed without needing a second command.
+`harness check 42` fetches the issue, extracts the config, runs the assertions, and returns the full result including stdout/stderr — so the agent immediately sees what failed without a second command.
+
+`harness done` reads the same config and appends the assertions to `HARNESS_REGRESSION.json` in the workdir. Every future `harness scan` runs these assertions first. Regressions surface before any new work starts.
 
 ---
 
@@ -151,29 +175,31 @@ The issue body stores everything harness needs in a hidden HTML comment:
 
 `harness scan` reads the directory and generates sensible assertions automatically:
 
-| Detected files                    | Ecosystem         | Assertions generated                   |
-|-----------------------------------|-------------------|----------------------------------------|
-| `package.json` + `tsconfig.json`  | TypeScript/Node   | `tsc --noEmit`, eslint, `npm test`     |
-| `package.json`                    | Node.js           | `npm test`                             |
+| Detected files                    | Ecosystem         | Assertions generated                        |
+|-----------------------------------|-------------------|---------------------------------------------|
+| `package.json` + `tsconfig.json`  | TypeScript/Node   | `tsc --noEmit`, eslint, `npm test`          |
+| `package.json`                    | Node.js           | `npm test` or `node --check <main>`         |
 | `Cargo.toml`                      | Rust              | `cargo check`, `cargo clippy`, `cargo test` |
-| `pyproject.toml` / `setup.py`     | Python            | ruff, mypy (if configured), `pytest`   |
-| `go.mod`                          | Go                | `go build`, `go vet`, `go test`        |
-| `Makefile`                        | Make              | `make test`, `make lint`, `make build` |
+| `pyproject.toml` / `setup.py`     | Python            | ruff, mypy (if configured), `pytest`        |
+| `go.mod`                          | Go                | `go build`, `go vet`, `go test`             |
+| `Makefile`                        | Make              | `make test`, `make lint`, `make build`      |
 
 ---
 
 ## GitHub Issues observability
 
-| Event             | GitHub action                                          |
-|-------------------|--------------------------------------------------------|
-| `harness scan`    | Checks for open issues first; if any, returns them. If none, returns ecosystem JSON for agent to decide goal. |
-| `harness open`    | Creates issue, embeds config, label `harness:running`  |
-| Duplicate goal    | Returns existing open issue instead of creating new    |
-| `harness log`     | Adds comment (attempt details, errors, diffs)          |
-| `harness done`    | Closes issue, label `harness:succeeded`                |
-| `harness fail`    | Labels `harness:failed`, leaves open for future agents |
-| `harness context` | Fetches issue + all comments as structured JSON        |
-| `harness history` | Lists all harness issues (running / succeeded / failed)|
+| Event              | GitHub action                                                             |
+|--------------------|---------------------------------------------------------------------------|
+| `harness scan`     | Runs regression manifest; checks open issues; returns ecosystem JSON      |
+| `harness open`     | Runs baseline assertions; creates issue with config + baseline; warns on similar titles |
+| Duplicate goal     | Returns existing open issue instead of creating new                       |
+| `harness log`      | Adds structured comment (outcome, duration, files, freetext)              |
+| `harness done`     | Closes issue (`harness:succeeded`); appends assertions to regression file |
+| `harness fail`     | Labels `harness:failed`, leaves open for future agents                    |
+| `harness observe`  | Creates `harness:triage` draft; no assertions; promotes to issue later    |
+| `--type spike`     | Labels `harness:spike`; exploration only, no assertions expected          |
+| `harness context`  | Fetches issue + all comments as structured JSON                           |
+| `harness history`  | Lists all harness issues (running / succeeded / failed / triage / spike)  |
 
 ---
 
@@ -181,12 +207,15 @@ The issue body stores everything harness needs in a hidden HTML comment:
 
 ```
 src/
-  types.ts     — HarnessConfig, Assertion, IssueContext interfaces
-  scanner.ts   — ecosystem detection
+  types.ts     — HarnessConfig, Assertion, IssueContext, RegressionEntry interfaces
+  args.ts      — argument parsing
+  scanner.ts   — ecosystem detection + regression manifest read/write
   checker.ts   — assertion evaluation with rich stdout/stderr output
   reporter.ts  — GitHub Issues via @octokit/rest
-  index.ts     — CLI entry point
+  index.ts     — CLI entry point and command handlers
+  tests/       — unit + integration tests
 SKILL.md       — agent usage guide (auto-installed to ~/.cursor/skills/)
+HARNESS_REGRESSION.json  — written to workdir by harness done; read by harness scan
 ```
 
 ---

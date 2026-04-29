@@ -13,6 +13,7 @@
 import { Octokit } from '@octokit/rest';
 import type {
   HarnessConfig,
+  CheckResult,
   IssueHandle,
   IssueContext,
   IssueSummary,
@@ -26,6 +27,8 @@ const LABELS = {
   running:   { name: 'harness:running',   color: '0075ca', description: 'Harness task in progress' },
   succeeded: { name: 'harness:succeeded', color: '0e8a16', description: 'Harness task succeeded' },
   failed:    { name: 'harness:failed',    color: 'd93f0b', description: 'Harness task exhausted all retries' },
+  triage:    { name: 'harness:triage',    color: 'e4e669', description: 'Observed issue pending triage' },
+  spike:     { name: 'harness:spike',     color: '5319e7', description: 'Exploratory spike — produces observations' },
 } as const;
 
 const CONFIG_OPEN  = '<!-- harness:config\n';
@@ -74,7 +77,21 @@ export function labelStatus(labels: Array<{ name?: string }>): IssueSummary['sta
   if (names.includes('harness:succeeded')) return 'succeeded';
   if (names.includes('harness:failed'))    return 'failed';
   if (names.includes('harness:running'))   return 'running';
+  if (names.includes('harness:triage'))    return 'triage';
+  if (names.includes('harness:spike'))     return 'spike';
   return 'unknown';
+}
+
+// Jaccard word-overlap similarity for fuzzy duplicate detection.
+// Returns 0 (no overlap) to 1 (identical word sets).
+export function titleSimilarity(a: string, b: string): number {
+  const words = (s: string) =>
+    new Set(s.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(Boolean));
+  const wa = words(a);
+  const wb = words(b);
+  const intersection = [...wa].filter((x) => wb.has(x)).length;
+  const union = new Set([...wa, ...wb]).size;
+  return union === 0 ? 0 : intersection / union;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,15 +115,36 @@ export function parseConfig(issueBody: string): HarnessConfig | null {
   }
 }
 
-export function buildIssueBody(goal: string, config: HarnessConfig): string {
+export function buildIssueBody(
+  goal: string,
+  config: HarnessConfig,
+  baseline?: CheckResult,
+): string {
   const assertionCount = config.assertions.length;
+  const typeTag = config.type ? ` | **Type:** \`${config.type}\`` : '';
   const lines = [
     `**Goal:** ${goal}`,
     '',
-    `**Assertions:** ${assertionCount}${config.workdir ? ` | **Workdir:** \`${config.workdir}\`` : ''}`,
-    '',
-    embedConfig(config),
+    `**Assertions:** ${assertionCount}${config.workdir ? ` | **Workdir:** \`${config.workdir}\`` : ''}${typeTag}`,
   ];
+
+  if (baseline) {
+    const passed = baseline.results.filter((r) => r.ok).length;
+    const icon = baseline.ok ? '✅' : '⚠️';
+    lines.push('');
+    lines.push(`**Baseline at open:** ${icon} ${passed}/${assertionCount} assertions pass`);
+    if (!baseline.ok) {
+      for (const r of baseline.results.filter((r) => !r.ok)) {
+        const label = r.assertion.type === 'shell'
+          ? (r.assertion as { command: string }).command.slice(0, 60)
+          : (r.assertion as { path: string }).path;
+        lines.push(`  - ❌ \`${label}\`: ${r.reason ?? 'failed'}`);
+      }
+    }
+  }
+
+  lines.push('');
+  lines.push(embedConfig(config));
   return lines.join('\n');
 }
 
@@ -138,7 +176,7 @@ export async function findExisting(
   owner: string,
   repo: string,
   goal: string,
-): Promise<IssueHandle | null> {
+): Promise<{ exact: IssueHandle | null; similar: Array<{ number: string; goal: string; similarity: number }> }> {
   const title = `[harness] ${goal}`;
   const result = await safe('findExisting', () =>
     octokit.issues.listForRepo({
@@ -149,12 +187,25 @@ export async function findExisting(
     })
   );
 
-  if (!result) return null;
-  const match = result.data.find((i) => i.title === title);
-  if (!match) return null;
+  if (!result) return { exact: null, similar: [] };
 
-  process.stderr.write(`[harness] duplicate: issue #${match.number} already tracks this goal\n`);
-  return { number: String(match.number), url: match.html_url, goal };
+  const exact = result.data.find((i) => i.title === title);
+  if (exact) {
+    process.stderr.write(`[harness] duplicate: issue #${exact.number} already tracks this goal\n`);
+    return { exact: { number: String(exact.number), url: exact.html_url, goal }, similar: [] };
+  }
+
+  // Fuzzy: find open issues with >50% word overlap — warn but don't block.
+  const similar = result.data
+    .map((i) => ({
+      number: String(i.number),
+      goal: i.title.replace(/^\[harness\]\s*/, ''),
+      similarity: titleSimilarity(goal, i.title.replace(/^\[harness\]\s*/, '')),
+    }))
+    .filter((i) => i.similarity >= 0.5)
+    .sort((a, b) => b.similarity - a.similarity);
+
+  return { exact: null, similar };
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +216,8 @@ export async function openIssue(
   goal: string,
   config: HarnessConfig,
   repoSlug: string,
-): Promise<IssueHandle | null> {
+  baseline?: CheckResult,
+): Promise<{ handle: IssueHandle; similar: Array<{ number: string; goal: string; similarity: number }> } | null> {
   const octokit = makeClient();
   if (!octokit) return null;
 
@@ -173,20 +225,49 @@ export async function openIssue(
 
   await ensureLabels(octokit, owner, repo);
 
-  const existing = await findExisting(octokit, owner, repo, goal);
-  if (existing) return existing;
+  const { exact, similar } = await findExisting(octokit, owner, repo, goal);
+  if (exact) return { handle: exact, similar: [] };
+
+  const labelName = config.type === 'spike' ? LABELS.spike.name : LABELS.running.name;
 
   const result = await safe('openIssue', () =>
     octokit.issues.create({
       owner, repo,
       title: `[harness] ${goal}`,
-      body: buildIssueBody(goal, config),
-      labels: [LABELS.running.name],
+      body: buildIssueBody(goal, config, baseline),
+      labels: [labelName],
     })
   );
 
   if (!result) return null;
-  return { number: String(result.data.number), url: result.data.html_url, goal };
+  return {
+    handle: { number: String(result.data.number), url: result.data.html_url, goal },
+    similar,
+  };
+}
+
+/** Create a triage observation issue — no assertions, no config, just a note. */
+export async function observeIssue(
+  observation: string,
+  repoSlug: string,
+): Promise<IssueHandle | null> {
+  const octokit = makeClient();
+  if (!octokit) return null;
+
+  const { owner, repo } = parseRepo(repoSlug);
+  await ensureLabels(octokit, owner, repo);
+
+  const result = await safe('observeIssue', () =>
+    octokit.issues.create({
+      owner, repo,
+      title: `[harness:observe] ${observation}`,
+      body: `**Observation logged during workflow run.**\n\nThis is a triage draft — no assertions attached. Promote to a fix/correctness/spike issue when ready to act on it.`,
+      labels: [LABELS.triage.name],
+    })
+  );
+
+  if (!result) return null;
+  return { number: String(result.data.number), url: result.data.html_url, goal: observation };
 }
 
 export async function addComment(
@@ -300,8 +381,7 @@ export async function listIssues(repoSlug: string): Promise<IssueSummary[]> {
     octokit.issues.listForRepo({
       owner, repo,
       state: 'all',
-      labels: 'harness:running,harness:succeeded,harness:failed',
-      per_page: 50,
+      per_page: 100,
       sort: 'updated',
     })
   );
@@ -309,11 +389,11 @@ export async function listIssues(repoSlug: string): Promise<IssueSummary[]> {
   if (!result) return [];
 
   return result.data
-    .filter((i) => i.title.startsWith('[harness]'))
+    .filter((i) => i.title.startsWith('[harness]') || i.title.startsWith('[harness:observe]'))
     .map((i) => ({
       number: String(i.number),
       url: i.html_url,
-      goal: i.title.replace(/^\[harness\]\s*/, ''),
+      goal: i.title.replace(/^\[harness(?::\w+)?\]\s*/, ''),
       status: labelStatus(i.labels as Array<{ name?: string }>),
       updatedAt: i.updated_at,
     }));

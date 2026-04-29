@@ -9,7 +9,23 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import type { Assertion, HarnessConfig } from './types.js';
+import type { Assertion, HarnessConfig, RegressionEntry } from './types.js';
+
+const REGRESSION_FILE = 'HARNESS_REGRESSION.json';
+
+export function readRegressionManifest(workdir: string): RegressionEntry[] {
+  const file = path.join(path.resolve(workdir), REGRESSION_FILE);
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as RegressionEntry[];
+  } catch {
+    return [];
+  }
+}
+
+export function writeRegressionManifest(workdir: string, entries: RegressionEntry[]): void {
+  const file = path.join(path.resolve(workdir), REGRESSION_FILE);
+  fs.writeFileSync(file, JSON.stringify(entries, null, 2) + '\n', 'utf8');
+}
 
 interface EcosystemMatch {
   name: string;
