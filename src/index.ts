@@ -73,6 +73,7 @@ function hint(...lines: string[]): void {
   }
 }
 
+
 export function getRepo(flagValue?: string): string {
   // Priority: --repo flag > GITHUB_REPO env var > git remote in cwd
   const r = flagValue ?? process.env['GITHUB_REPO'] ?? detectRepo('.');
@@ -115,7 +116,10 @@ COMMANDS
     Open a tracking issue. Runs assertions as a baseline before creating the
     issue — records current pass/fail state in the issue body.
     Warns if a similar open issue already exists (fuzzy title match).
-    TYPE: fix | correctness | performance | workflow | spike
+    TYPE: fix | correctness | performance | workflow | spike | live
+      live = assertions require a running system (server, browser, device).
+             harness check reminds you the system must be up. Use for
+             behavioral assertions that can't run in a headless CI environment.
     Each --assert adds a shell assertion with exitCode 0.
     Prints { number, url, goal, similar? }.
 
@@ -283,16 +287,35 @@ export async function cmdOpen(args: Args): Promise<number> {
   }
 
   out({ ...opened.handle, similar: opened.similar.length > 0 ? opened.similar : undefined });
-  hint(
+
+  const hintLines: string[] = [
     `Issue #${opened.handle.number} opened. Baseline state is recorded in the issue body.`,
     `Run: harness context ${opened.handle.number}  — read the baseline before touching anything.`,
     `Then: preflight — run the project as a real user would, verify assertions actually execute.`,
-    typeVal === 'correctness'
-      ? `⚠️  correctness issue: structural assertions are not enough. You must verify in the live system before harness done.`
-      : typeVal === 'spike'
-      ? `spike issue: explore freely, record findings with harness log and harness observe. No code required.`
-      : `Do the work, then: harness check ${opened.handle.number}`,
-  );
+  ];
+
+  if (typeVal === 'correctness' || typeVal === 'live') {
+    hintLines.push(`⚠️  ${typeVal} issue: structural assertions alone are not sufficient.`);
+    hintLines.push(`    You must verify in the live system before harness done.`);
+  } else if (typeVal === 'spike') {
+    hintLines.push(`spike issue: explore freely, record findings with harness log and harness observe.`);
+  } else {
+    hintLines.push(`Do the work, then: harness check ${opened.handle.number}`);
+  }
+
+  // Gold standard question — always fires, regardless of what assertions were written.
+  // The agent has full context to reason about this; harness doesn't need to detect it.
+  if (assertions.length > 0) {
+    hintLines.push(``);
+    hintLines.push(`🔎 Gold standard question — answer before proceeding:`);
+    hintLines.push(`   Are these assertions behavioral (run the actual system, check real output)`);
+    hintLines.push(`   or structural (grep/tsc/lint — verify code looks right)?`);
+    hintLines.push(`   If structural: what would you test if the system were running right now?`);
+    hintLines.push(`   If that's achievable, add it with --type live and a behavioral --assert.`);
+    hintLines.push(`   If not achievable here: proceed, but know structural assertions can't catch runtime bugs.`);
+  }
+
+  hint(...hintLines);
   return 0;
 }
 
@@ -312,12 +335,13 @@ export async function cmdCheck(args: Args): Promise<number> {
   out(result);
 
   if (result.ok) {
-    if (ctx.config.type === 'correctness') {
+    if (ctx.config.type === 'correctness' || ctx.config.type === 'live') {
       hint(
-        `⚠️  Assertions pass — but this is a correctness issue. harness check is not enough.`,
+        `⚠️  Assertions pass — but this is a ${ctx.config.type} issue. harness check is not enough.`,
         `You must verify the behavior in the live system before closing:`,
         `  Run the system, exercise the changed behavior, confirm it works end-to-end.`,
-        `Then: harness log ${issueNumber} "<what you verified>" --outcome pass`,
+        `  For a live issue: the system must actually be running when you verify.`,
+        `Then: harness log ${issueNumber} "<what you verified live>" --outcome pass`,
         `      git add -A && git commit -m "..." && git push`,
         `      harness done ${issueNumber} <attempts>`,
       );
@@ -483,7 +507,7 @@ export async function cmdHistory(args: Args): Promise<number> {
         i.status === 'succeeded' ? '✅' :
         i.status === 'failed'    ? '❌' :
         i.status === 'triage'    ? '🔍' :
-        i.status === 'spike'     ? '🧪' : '🔄';
+        i.status === 'spike'     ? '🧪' : '🔄'; // live issues show as 🔄 (running)
       process.stdout.write(`${icon} #${i.number.padEnd(4)} ${i.goal.slice(0, 60).padEnd(62)} ${i.updatedAt.slice(0, 10)}\n`);
     }
     process.stdout.write(`\n${issues.length} issue(s)\n`);

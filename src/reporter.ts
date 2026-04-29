@@ -29,6 +29,7 @@ const LABELS = {
   failed:    { name: 'harness:failed',    color: 'd93f0b', description: 'Harness task exhausted all retries' },
   triage:    { name: 'harness:triage',    color: 'e4e669', description: 'Observed issue pending triage' },
   spike:     { name: 'harness:spike',     color: '5319e7', description: 'Exploratory spike — produces observations' },
+  live:      { name: 'harness:live',      color: 'f9d0c4', description: 'Assertions require a running live environment' },
 } as const;
 
 const CONFIG_OPEN  = '<!-- harness:config\n';
@@ -79,6 +80,7 @@ export function labelStatus(labels: Array<{ name?: string }>): IssueSummary['sta
   if (names.includes('harness:running'))   return 'running';
   if (names.includes('harness:triage'))    return 'triage';
   if (names.includes('harness:spike'))     return 'spike';
+  if (names.includes('harness:live'))      return 'running'; // live issues are active work
   return 'unknown';
 }
 
@@ -228,7 +230,9 @@ export async function openIssue(
   const { exact, similar } = await findExisting(octokit, owner, repo, goal);
   if (exact) return { handle: exact, similar: [] };
 
-  const labelName = config.type === 'spike' ? LABELS.spike.name : LABELS.running.name;
+  const labelName = config.type === 'spike' ? LABELS.spike.name
+    : config.type === 'live' ? LABELS.live.name
+    : LABELS.running.name;
 
   const result = await safe('openIssue', () =>
     octokit.issues.create({

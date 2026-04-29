@@ -36,7 +36,7 @@ export type Assertion = ShellAssertion | FileAssertion;
 //   spike        — exploration; produces observations, not assertions
 // ---------------------------------------------------------------------------
 
-export type IssueType = 'fix' | 'correctness' | 'performance' | 'workflow' | 'spike';
+export type IssueType = 'fix' | 'correctness' | 'performance' | 'workflow' | 'spike' | 'live';
 
 // ---------------------------------------------------------------------------
 // HarnessConfig — embedded in the GitHub Issue body as a hidden HTML comment.

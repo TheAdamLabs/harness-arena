@@ -155,6 +155,20 @@ harness open "Add JSDoc to all public functions in src/api.ts" \
 - `performance` — must include a timing measurement assertion
 - `workflow` — end-to-end run + report file check
 - `spike` — exploration only; produces observations, not code. Use `harness log` to record findings.
+- `live` — assertions require a **running environment** (server, browser, device). harness check will remind you the system must be up. Use this for behavioral assertions that can't run headlessly.
+
+**The assertion hierarchy — behavioral first, structural as fallback:**
+
+> The primary question is: *what assertion would you write if the system were running right now?*
+
+| Tier | Type | Example | Catches runtime bugs? |
+|------|------|---------|----------------------|
+| ✅ Best | Behavioral / live | start server → send real command → assert response | Yes |
+| ⚠️ Fallback | Structural | `grep`, `tsc`, `npm test`, `eslint` | No — only verifies code *looks* right |
+
+Structural assertions are valid CI fallbacks (they run without a live environment), but they should not be the *primary* correctness signal. If an issue is about behavior, there must be at least one behavioral assertion. Structural assertions alone mean "harness:succeeded" is theater.
+
+`harness open` always asks you the gold standard question after creating an issue. Answer it honestly — you have the full context of what the project does and what the assertions actually test. The answer is the difference between a regression manifest that catches real bugs and one that accumulates false confidence.
 
 **Fuzzy dedup warning:** If a similar open issue exists (>50% word overlap in title), harness prints a warning with the matching issue number. Review before proceeding.
 
@@ -288,20 +302,13 @@ harness fail 16 3
 
 ## Assertion cheat sheet
 
-### Structural (use for `fix` type goals)
-```json
-{ "type": "shell", "command": "npx tsc --noEmit",     "expect": { "exitCode": 0 } }
-{ "type": "shell", "command": "npm test",              "expect": { "exitCode": 0 } }
-{ "type": "shell", "command": "cargo clippy",          "expect": { "exitCode": 0 } }
-{ "type": "shell", "command": "python -m pytest",      "expect": { "exitCode": 0 } }
-{ "type": "shell", "command": "go test ./...",         "expect": { "exitCode": 0 } }
-{ "type": "shell", "command": "grep -r 'TODO' src/",  "expect": { "exitCode": 1 } }
-{ "type": "file",  "path": "dist/index.js",           "expect": { "exists": true } }
-{ "type": "file",  "path": "src/utils.ts",            "expect": { "contains": "@returns" } }
-```
+> **Always ask first:** *"What assertion would I write if the system were running right now?"*
+> Behavioral assertions are the aspiration. Structural assertions are the CI fallback.
 
-### Behavioural (required for `correctness` type goals)
-These run the **actual system** and check its output — they can't be satisfied by restructuring source code alone.
+### Tier 1: Behavioral / live (preferred for correctness, live, performance goals)
+
+These run the **actual system** — they can't be satisfied by restructuring source code alone.
+Use `--type live` when the environment must be running (browser, server, device).
 
 ```json
 { "type": "shell",
@@ -318,6 +325,22 @@ These run the **actual system** and check its output — they can't be satisfied
 ```
 
 The pattern: **start system → exercise it → assert on observable output → stop system**.
+
+### Tier 2: Structural (acceptable for fix/code-quality goals; CI fallback for others)
+
+These verify code *looks* right, not that it *works*. Valid for `fix` goals or as a secondary
+signal alongside behavioral assertions. **Not sufficient alone for correctness or live goals.**
+
+```json
+{ "type": "shell", "command": "npx tsc --noEmit",     "expect": { "exitCode": 0 } }
+{ "type": "shell", "command": "npm test",              "expect": { "exitCode": 0 } }
+{ "type": "shell", "command": "cargo clippy",          "expect": { "exitCode": 0 } }
+{ "type": "shell", "command": "python -m pytest",      "expect": { "exitCode": 0 } }
+{ "type": "shell", "command": "go test ./...",         "expect": { "exitCode": 0 } }
+{ "type": "shell", "command": "grep -r 'TODO' src/",  "expect": { "exitCode": 1 } }
+{ "type": "file",  "path": "dist/index.js",           "expect": { "exists": true } }
+{ "type": "file",  "path": "src/utils.ts",            "expect": { "contains": "@returns" } }
+```
 
 ---
 
