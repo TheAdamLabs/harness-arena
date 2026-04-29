@@ -222,7 +222,7 @@ export async function cmdScan(args: Args): Promise<number> {
       ecosystem:   result.ecosystem,
       config:      result.config,
       regressions: [],
-      next:        `inspect the repo, form 2-4 specific improvement recommendations, ask the user which to pursue, then: harness open "<chosen goal>" --repo ${repo} --workdir ${result.config.workdir ?? path.resolve(workdir)}`,
+      next:        `inspect the project holistically — read the README, run it as a real user would, look for real-world correctness issues, missing value, usability problems, and reliability gaps, not just code quality. Form 2-4 recommendations spanning different dimensions (e.g. a correctness issue found by actually running the tool, a missing feature users would need, a usability gap, a code quality item). Ask the user which to pursue, then: harness open "<chosen goal>" --type <TYPE> --repo ${repo} --workdir ${result.config.workdir ?? path.resolve(workdir)}`,
     });
   }
   return 0;

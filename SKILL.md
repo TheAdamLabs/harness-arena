@@ -6,7 +6,9 @@ Use the **Shell tool** to run `harness COMMAND` commands.
 
 harness is a **loop coordinator and GitHub Issues tracker** for autonomous repo improvement.
 
-**High-level goal:** make any software project continuously better — autonomously, across unlimited sessions and agents. The loop closes itself: scan → goal → work → verify → ship → scan again. Each closed issue leaves the codebase measurably better than before, and leaves a regression guard so it stays that way.
+**High-level goal:** make any software project continuously more valuable — autonomously, across unlimited sessions and agents. The loop closes itself: scan → goal → work → verify → ship → scan again. Each closed issue leaves the project measurably better than before, and leaves a regression guard so it stays that way.
+
+**"Better" means more than tests passing.** Think like a product engineer, not a code reviewer. Ask: *"What would make this more useful to its users?"* before *"What code issues can I find?"* The highest-value improvements are usually discovered by running the project as a real user would — not by scanning source code.
 
 **You do the work. harness tracks it and verifies it.**
 
@@ -98,16 +100,35 @@ harness scan ./my-repo --repo owner/repo
   "next": "inspect the repo, form 2-4 specific improvement recommendations, ask the user which to pursue..."
 }
 ```
-→ **Do not open an issue yet.** Inspect the repo first, then ask the user:
+→ **Do not open an issue yet.** Inspect the project holistically first — then ask the user.
+
+**How to inspect holistically:** Read the README to understand what the project does and who uses it. Then look at the project from multiple angles:
+
+- **Real-world correctness** — run the project as a user would. Does it actually do what it claims? What breaks on real inputs?
+- **Usability** — try the first-time experience. Are docs accurate? Do error messages tell you what to do?
+- **Missing value** — what user problems does it not yet solve? What workflows are clunky?
+- **Reliability** — what happens on bad inputs, network failures, edge cases?
+- **Code quality** — types, tests, lint. But only after the above.
+
+Then form 2–4 recommendations spanning different dimensions — not just code quality. Example for a browser automation tool:
 
 ```
-I scanned the repo and found a few things worth improving:
+I looked at tiny-browser as a user would. Here's what I found:
 
-1. checker.ts has no unit tests (scanner and reporter are covered)
-2. There are 3 TypeScript strict errors in src/reporter.ts
-3. README examples reference the old task.json format
+1. [Real-world correctness] nth selector returns wrong element on pages where the
+   first match is hidden — needs a test that actually runs the browser and verifies
+   the returned element is the visible one, not the first in the DOM.
 
-Which would you like me to tackle? Or do you have a different goal in mind?
+2. [Performance] Screenshots take ~3s on high-DPI displays due to a missing DPR
+   scale factor. Could be ~300ms. Has a test that catches this.
+
+3. [Usability] The README example uses a workflow that requires Chrome to already
+   be open, but there's no instruction for how to open it. First-time users fail here.
+
+4. [Value] There's no way to wait for a specific element to appear before interacting.
+   Most real workflows need this (page loads, AJAX). Would unlock a whole class of use cases.
+
+Which would you like me to tackle? Or do you have something else in mind?
 ```
 
 Wait for the user's answer, then call `harness open` with the chosen goal.
@@ -146,26 +167,41 @@ harness context 14
 # → { goal, config (type + assertions + workdir), status, baseline, attempts: [...] }
 ```
 
-### Step 4 — Preflight: gather context before touching anything
+### Step 4 — Preflight: understand the project and gather context
 
-Before editing a single file, read the relevant code and run checks dry:
+Before editing a single file:
 
+**Understand what the project does and how users use it:**
 ```bash
-# Read the files your assertions will touch
-cat /path/to/repo/src/api.ts
+cat /path/to/repo/README.md          # what does this project do? who uses it?
+cat /path/to/repo/package.json       # what are the entry points and scripts?
+ls /path/to/repo/                    # what's the overall structure?
+```
 
-# Verify the assertions you're about to write will actually run
+**Run the project as a real user would** — this is where the most valuable improvement ideas come from:
+```bash
+# For a CLI tool: actually run it
+cd /path/to/repo && node bin/cli.mjs --help
+cd /path/to/repo && node bin/cli.mjs <real command>
+
+# For a server: start it and exercise it
+cd /path/to/repo && npm start &
+curl http://localhost:3000/...
+
+# For a library: run the examples from the README
+```
+
+**Verify the assertions you plan to write will actually run:**
+```bash
 cd /path/to/repo && npx tsc --noEmit        # does tsc work at all?
 cd /path/to/repo && npm test                # does test suite pass currently?
-cd /path/to/repo && npx eslint . 2>&1 | head -20  # any pre-existing lint errors?
-
-# Check peer deps before writing tool-specific assertions
-node -e "require('@eslint/js')" 2>&1        # installed?
+node -e "require('@eslint/js')" 2>&1        # are peer deps installed?
 ```
 
 Common traps:
-- **Fragile assertions** — don't assert against a live server/port. For correctness goals, start the server inside the assertion command, exercise it, then stop it.
-- **All-structural assertions on correctness goals** — if the goal is behavioural ("fix nth selector"), use a shell assertion that actually invokes the system (`./bin/cli.mjs find_element ...`) and checks its output, not just `grep` on source code.
+- **Only reading source code** — the most important issues are usually only visible when you actually run the project. Read the code *and* run it.
+- **All-structural assertions on correctness goals** — if the goal is behavioural ("fix nth selector"), use a shell assertion that actually invokes the system and checks its output, not just `grep` on source code.
+- **Fragile assertions** — don't assert against a live server/port that isn't started by the assertion itself.
 - **Assertion gaming** — the baseline tells you what currently fails. If your change makes all assertions pass but the baseline showed them passing too, you changed nothing meaningful.
 - **Missing peer deps** — verify all tools are installed before writing assertions.
 - **Too-narrow `old_string` in edits** — include enough surrounding context to uniquely identify the replacement target.

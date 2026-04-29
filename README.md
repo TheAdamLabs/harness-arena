@@ -1,10 +1,32 @@
 # harness-arena
 
-**Make any software project continuously better — autonomously, across unlimited sessions and agents.**
+**Make any software project continuously more valuable — autonomously, across unlimited sessions and agents.**
 
-harness is a loop coordinator and GitHub Issues tracker for AI coding agents. The loop closes itself: scan → goal → work → verify → ship → scan again. Each closed issue leaves the codebase measurably better than before, and leaves a regression guard so it stays that way.
+harness is a loop coordinator and GitHub Issues tracker for AI coding agents. The loop closes itself: scan → goal → work → verify → ship → scan again. Each closed issue leaves the project measurably better than before, and leaves a regression guard so it stays that way.
 
 No LLM bundled. Bring your own agent (Cursor, Claude Code, any coding AI).
+
+---
+
+## Philosophy
+
+"Better" means more than passing tests. harness pushes agents to improve projects across every dimension that matters to users:
+
+| Dimension | Examples |
+|-----------|----------|
+| **Real-world correctness** | Does it actually do the thing it claims to do? End-to-end tests using the project as a user would — not just unit tests |
+| **Usability** | Is it easy to use correctly? Good error messages, sane defaults, clear docs |
+| **Reliability** | Does it handle edge cases, failures, and unexpected inputs gracefully? |
+| **Performance** | Is it fast enough to be practical? Where are the bottlenecks? |
+| **Observability** | Can you tell when it's working or not? Logs, debug output, status signals |
+| **Value** | Does it solve real problems users actually have? Are there missing features that would unlock new use cases? |
+| **Code quality** | Is the codebase maintainable, typed, tested, readable? |
+
+An agent improving a browser automation tool should ask: *"Does scrolling actually work on pages with inner containers? Does nth selector return the right element on a real page?"* — not just *"does npm test pass?"*
+
+An agent improving a CLI tool should ask: *"Does a first-time user succeed with the README instructions? Are the error messages actionable?"* — not just *"are there TypeScript errors?"*
+
+The highest-value improvements are usually found by running the project as a real user would, observing what breaks or feels wrong, and fixing that.
 
 ```mermaid
 flowchart TD
