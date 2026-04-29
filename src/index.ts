@@ -65,6 +65,14 @@ export function out(data: unknown): void {
   process.stdout.write(JSON.stringify(data, null, 2) + '\n');
 }
 
+/** Emit a workflow hint to stderr. Goes after the result so the agent sees it last. */
+function hint(...lines: string[]): void {
+  process.stderr.write('\n');
+  for (const line of lines) {
+    process.stderr.write(`[harness:next] ${line}\n`);
+  }
+}
+
 export function getRepo(flagValue?: string): string {
   // Priority: --repo flag > GITHUB_REPO env var > git remote in cwd
   const r = flagValue ?? process.env['GITHUB_REPO'] ?? detectRepo('.');
@@ -216,6 +224,11 @@ export async function cmdScan(args: Args): Promise<number> {
       process.stderr.write(`[harness] warning: similar open issues found — review before proceeding\n`);
     }
     out({ ...opened.handle, ecosystem: result.ecosystem, similar: opened.similar });
+    hint(
+      `Issue #${opened.handle.number} opened.`,
+      `Run: harness context ${opened.handle.number}  — read the baseline and any prior attempts before touching code.`,
+      `Then: preflight — run the project as a real user would before making changes.`,
+    );
   } else {
     out({
       repo,
@@ -224,6 +237,13 @@ export async function cmdScan(args: Args): Promise<number> {
       regressions: [],
       next:        `inspect the project holistically — read the README, run it as a real user would, look for real-world correctness issues, missing value, usability problems, and reliability gaps, not just code quality. Form 2-4 recommendations spanning different dimensions (e.g. a correctness issue found by actually running the tool, a missing feature users would need, a usability gap, a code quality item). Ask the user which to pursue, then: harness open "<chosen goal>" --type <TYPE> --repo ${repo} --workdir ${result.config.workdir ?? path.resolve(workdir)}`,
     });
+    hint(
+      `Slate is clean. Before forming recommendations:`,
+      `  1. Read the project README — understand its purpose and users.`,
+      `  2. Run the project as a real user would — what breaks on real inputs?`,
+      `  3. Form 2-4 recommendations spanning different dimensions (correctness, usability, value, code quality).`,
+      `  4. Ask the user which to pursue, then: harness open "<goal>" --type <TYPE>`,
+    );
   }
   return 0;
 }
@@ -263,6 +283,16 @@ export async function cmdOpen(args: Args): Promise<number> {
   }
 
   out({ ...opened.handle, similar: opened.similar.length > 0 ? opened.similar : undefined });
+  hint(
+    `Issue #${opened.handle.number} opened. Baseline state is recorded in the issue body.`,
+    `Run: harness context ${opened.handle.number}  — read the baseline before touching anything.`,
+    `Then: preflight — run the project as a real user would, verify assertions actually execute.`,
+    typeVal === 'correctness'
+      ? `⚠️  correctness issue: structural assertions are not enough. You must verify in the live system before harness done.`
+      : typeVal === 'spike'
+      ? `spike issue: explore freely, record findings with harness log and harness observe. No code required.`
+      : `Do the work, then: harness check ${opened.handle.number}`,
+  );
   return 0;
 }
 
@@ -280,6 +310,34 @@ export async function cmdCheck(args: Args): Promise<number> {
   const result = await check(ctx.config, workdirOverride);
   process.stdout.write(formatCheckResult(result) + '\n');
   out(result);
+
+  if (result.ok) {
+    if (ctx.config.type === 'correctness') {
+      hint(
+        `⚠️  Assertions pass — but this is a correctness issue. harness check is not enough.`,
+        `You must verify the behavior in the live system before closing:`,
+        `  Run the system, exercise the changed behavior, confirm it works end-to-end.`,
+        `Then: harness log ${issueNumber} "<what you verified>" --outcome pass`,
+        `      git add -A && git commit -m "..." && git push`,
+        `      harness done ${issueNumber} <attempts>`,
+      );
+    } else {
+      hint(
+        `All assertions pass.`,
+        `Next: harness log ${issueNumber} "<summary of what you did>" --outcome pass --files <changed-files>`,
+        `      git add -A && git commit -m "..." && git push`,
+        `      harness done ${issueNumber} <attempts>`,
+      );
+    }
+  } else {
+    hint(
+      `Assertions failed. stdout/stderr above tells you why — no need to re-run the command.`,
+      `Next: harness log ${issueNumber} "<what you tried, what failed>" --outcome fail`,
+      `      Fix the issue, then: harness check ${issueNumber}`,
+      `      If blocked: harness fail ${issueNumber} <attempts>`,
+    );
+  }
+
   return result.ok ? 0 : 1;
 }
 
@@ -313,6 +371,18 @@ export async function cmdLog(args: Args): Promise<number> {
     : message;
 
   await addComment(repo, issueNumber, body);
+  if (outcome === 'pass') {
+    hint(
+      `Attempt logged. If you haven't pushed yet:`,
+      `  git add -A && git commit -m "..." && git push`,
+      `  harness done ${issueNumber} <attempts>`,
+    );
+  } else if (outcome === 'fail') {
+    hint(
+      `Attempt logged. Fix the issue, then: harness check ${issueNumber}`,
+      `If this approach is fundamentally blocked: harness fail ${issueNumber} <attempts>`,
+    );
+  }
   return 0;
 }
 
@@ -341,6 +411,10 @@ export async function cmdDone(args: Args): Promise<number> {
 
   await closeAsSucceeded(repo, issueNumber, attempts);
   process.stdout.write(`[harness] Issue #${issueNumber} closed as succeeded.\n`);
+  hint(
+    `Issue closed. Assertions added to HARNESS_REGRESSION.json — they'll run on every future scan.`,
+    `Next: harness scan <workdir>  — check for regressions and pick the next improvement.`,
+  );
   return 0;
 }
 
@@ -353,6 +427,10 @@ export async function cmdFail(args: Args): Promise<number> {
 
   await markAsFailed(repo, issueNumber, attempts);
   process.stdout.write(`[harness] Issue #${issueNumber} marked as failed.\n`);
+  hint(
+    `Issue stays open with harness:failed label — another agent can resume with: harness context ${issueNumber}`,
+    `Next: harness scan <workdir>  — pick a different improvement or revisit later.`,
+  );
   return 0;
 }
 
@@ -366,6 +444,13 @@ export async function cmdContext(args: Args): Promise<number> {
   if (!ctx) die(`could not fetch issue #${issueNumber}`);
 
   out(ctx);
+  hint(
+    `Context loaded for issue #${issueNumber} (${ctx.config.assertions.length} assertion(s), type: ${ctx.config.type ?? 'unset'}).`,
+    ctx.attempts.length > 0
+      ? `${ctx.attempts.length} prior attempt(s) — review them before trying the same approach again.`
+      : `No prior attempts — this is a fresh start.`,
+    `When ready: harness check ${issueNumber}  (after doing the work)`,
+  );
   return 0;
 }
 
@@ -379,6 +464,10 @@ export async function cmdObserve(args: Args): Promise<number> {
   if (!handle) die('failed to create observation issue');
 
   out(handle);
+  hint(
+    `Triage draft #${handle.number} created. Continue the active issue — don't derail it for this.`,
+    `Promote to a real issue later with: harness open "<goal>" --type <TYPE>`,
+  );
   return 0;
 }
 

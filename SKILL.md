@@ -233,11 +233,37 @@ Full `stdout`/`stderr` per assertion is included — no second round-trip needed
 
 Only close or fail an issue **after** the code is committed and pushed. `harness done` appends the assertions to `HARNESS_REGRESSION.json` — these run on every future `harness scan` to catch regressions.
 
-**All assertions pass:**
+**Critical rule for `correctness` type issues:**
+
+> **`harness check` passing is not sufficient for a correctness goal. You must also verify the behavior in the live system before `harness done`.**
+
+Structural assertions (grep, file exists, tsc) only confirm the code *looks* right. For correctness goals the only ground truth is what actually happens when the system runs. This is true even if the fix is "obviously correct" and mirrors an existing pattern — especially then, because that confidence is what causes regressions to slip through.
+
+Before closing a `correctness` issue:
+1. `harness check <issue>` — structural assertions pass
+2. **Run the system live and exercise the changed behavior directly** — does it actually do the right thing?
+3. Only if step 2 passes: `git push && harness done`
+
+**All assertions pass (fix/code quality goal):**
 ```bash
 harness log 16 "Added @param/@returns to 8 functions. tsc clean, grep confirms." \
   --outcome pass --duration 180 --files src/api.ts
 git add -A && git commit -m "feat: add JSDoc to public functions in src/api.ts" && git push
+harness done 16 1
+```
+
+**All assertions pass (correctness goal — live verification required):**
+```bash
+harness check 16  # structural assertions pass
+
+# NOW verify in the live system:
+# e.g. for a Chrome extension: load it in Chrome and test the changed behavior manually
+# e.g. for a CLI: run it with real inputs and check the output
+# e.g. for a server: make a real request and inspect the response
+
+harness log 16 "Structural assertions pass. Verified live: list_tabs now returns correct window on lastFocusedWindow. Tested with Cursor open alongside Chrome." \
+  --outcome pass --duration 240 --files background.js
+git add -A && git commit -m "fix: list_tabs use lastFocusedWindow" && git push
 harness done 16 1
 ```
 
