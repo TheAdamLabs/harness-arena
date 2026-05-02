@@ -1,358 +1,171 @@
-# harness-arena
+# harness
 
-Use the **Shell tool** to run `harness COMMAND` commands.
+A protocol for making any software project continuously more valuable — autonomously, across unlimited sessions.
 
-## What harness is
-
-harness is a **loop coordinator and GitHub Issues tracker** for autonomous repo improvement.
-
-**High-level goal:** make any software project continuously more valuable — autonomously, across unlimited sessions and agents. The loop closes itself: scan → goal → work → verify → ship → scan again. Each closed issue leaves the project measurably better than before, and leaves a regression guard so it stays that way.
-
-**"Better" means more than tests passing.** Think like a product engineer, not a code reviewer. Ask: *"What would make this more useful to its users?"* before *"What code issues can I find?"* The highest-value improvements are usually discovered by running the project as a real user would — not by scanning source code.
-
-**You do the work. harness tracks it and verifies it.**
-
-The GitHub Issue is the single source of truth — no local task files. Any agent on any machine picks up work by issue number alone.
-
-```
-harness scan ./repo  →  regressions + open issues  →  ecosystem facts if clear
-you inspect the repo  →  ask user for goal
-harness open "<goal>"  →  issue #42 (baseline run + assertions stored inside)
-you do the work        →  edit files, run commands
-harness check 42       →  assertions pass or fail (with full output)
-git push && harness done 42  →  issue closed ✅  +  assertions added to regression manifest
-       ↕
-harness context 42   →  read prior attempts before retrying
-harness observe "bug found mid-run"  →  triage draft, continue active issue
-```
-
-## Prerequisites
-
-```bash
-harness help
-# Not found? cd /path/to/harness-arena && npm install && npm run build && npm install -g .
-# Requires GITHUB_TOKEN; GITHUB_REPO=owner/repo is optional (auto-detected from git remote)
-```
-
-## Command reference
-
-```bash
-harness help
-harness scan    <workdir> [--repo R] [--goal "..."]
-  # Checks regressions from HARNESS_REGRESSION.json, then open issues, then ecosystem.
-  # With --goal: opens issue immediately (baseline run included).
-
-harness open    "<goal>" [--repo R] [--workdir P] [--type TYPE] [--assert "cmd"]...
-  # TYPE: fix | correctness | performance | workflow | spike
-  # Runs assertions as a baseline before creating the issue.
-  # Warns when a similar open issue exists (fuzzy title match).
-
-harness check   <issue>  [--workdir override]    # run assertions → PASS/FAIL + output
-harness log     <issue>  "<message>" [--outcome pass|fail|blocked] [--duration <s>] [--files a,b]
-harness context <issue>                          # read goal + config + all prior attempts
-harness history [--repo R]                       # list all harness issues
-harness done    <issue>  [attempts]              # close ✅ + append assertions to HARNESS_REGRESSION.json
-harness fail    <issue>  [attempts]              # mark ❌ (leave open)
-harness observe "<observation>" [--repo R]       # log a triage draft without derailing active issue
-```
+**You are the agent. Use your native tools (Shell, Read, Write) to run the loop.**
 
 ---
 
-## The autonomous improvement loop
+## The goal
 
-### Step 1 — Scan (orient + detect regressions)
+"Better" means better for real users — not just greener CI. The highest-value improvements come from running the project as a user would, observing what breaks or feels wrong, and fixing that. Ask: *"Does this actually work?"* before *"Does `npm test` pass?"*
 
-`harness scan` is always the entry point. Order of checks:
-1. Runs `HARNESS_REGRESSION.json` assertions → regressions from previously closed issues
-2. Checks for open `harness:running` issues → resume hint
-3. Returns ecosystem facts → you decide the goal
+---
 
-```bash
-harness scan ./my-repo --repo owner/repo
+## The loop
+
+```
+HARNESS.json exists in the target repo?
+  YES → read it → continue the active task (skip to Step 3)
+  NO  → Step 1: orient
 ```
 
-**Case A — regressions detected:**
+### Step 1 — Orient (no active task)
+
+**First: check guards.** If `HARNESS_GUARDS.json` exists, run each entry's assertions via Shell before doing anything else. If any fail, that regression is the task — go to Step 2 with it.
+
+```bash
+# Example guard check
+node tests/nth_visible.mjs   # exit 1 → regression found
+```
+
+**Then: run the project as a real user would.** Don't read source code first — use the project.
+
+```bash
+# CLI tool
+cd /path/to/repo && cat README.md   # understand what it claims to do
+node bin/cli.mjs --help             # try it
+node bin/cli.mjs <real command>     # does it actually work?
+
+# Server
+npm start & sleep 2 && curl http://localhost:3000/...
+
+# Chrome extension
+# load the extension, open devtools, exercise it manually in the browser
+
+# Library
+# run the README example verbatim
+```
+
+Observe what breaks, feels wrong, or is missing. Form 2–4 specific improvement recommendations across different dimensions:
+
+- **Real-world correctness** — does it do what it claims on real inputs?
+- **Usability** — does a first-time user succeed? Are error messages actionable?
+- **Reliability** — what breaks on bad inputs, network failures, edge cases?
+- **Value** — what problems does it not yet solve? What workflows are clunky?
+- **Performance** — is it fast enough to be practical?
+- **Code quality** — only after the above
+
+Ask the user which to pursue. Then go to Step 2.
+
+### Step 2 — Start a task
+
+Write `HARNESS.json` in the target repo. For a single issue:
+
 ```json
 {
-  "regressions": [
-    { "issue": "8", "goal": "chain sharp pipeline", "failed": ["npm test"] }
+  "goal": "specific, one-sentence description of what you will fix",
+  "assertions": [
+    "node tests/my_behavior.mjs",
+    "npm test"
   ],
-  "next": "fix regressions first, or open a new issue"
+  "log": []
 }
 ```
-→ Address the regression (open a new issue for it), then scan again.
 
-**Case B — open issues already exist (resume, don't duplicate):**
+For multiple issues found in orient (track each explicitly):
+
 ```json
 {
-  "existing": [{ "number": 14, "goal": "Add missing JSDoc", "status": "running" }],
-  "next": "harness context 14 --repo owner/repo"
+  "goal": "Fix N behavioral bugs found in orient",
+  "items": [
+    { "issue": "get_network timestamps are wrong (monotonic vs Unix ms)", "done": false },
+    { "issue": "CLI exits 0 on logical failures like find_element not found", "done": false },
+    { "issue": "scroll can't target a specific area on the page", "done": false }
+  ],
+  "assertions": [],
+  "log": []
 }
 ```
-→ Read that context, then continue from Step 3.
 
-**Case C — slate is clean (start fresh):**
+Mark each `"done": true` as you verify it. Add assertions as you go — one per item minimum.
+
+**Choosing assertions:** Prefer behavioral — commands that run the actual system and check its output. Structural checks (`tsc`, `grep`, `npm test`) are fine as a secondary signal but can't be the only verification for behavioral goals.
+
+Commit `HARNESS.json` so any future session can pick up where you left off.
+
+### Step 3 — Do the work
+
+Make the changes. After each meaningful attempt — especially a failed one — append to the log with specifics:
+
 ```json
-{
-  "ecosystem": "TypeScript / Node.js",
-  "config": { "workdir": "/path/to/repo", "assertions": [...] },
-  "regressions": [],
-  "next": "inspect the repo, form 2-4 specific improvement recommendations, ask the user which to pursue..."
-}
-```
-→ **Do not open an issue yet.** Inspect the project holistically first — then ask the user.
-
-**How to inspect holistically:** Read the README to understand what the project does and who uses it. Then look at the project from multiple angles:
-
-- **Real-world correctness** — run the project as a user would. Does it actually do what it claims? What breaks on real inputs?
-- **Usability** — try the first-time experience. Are docs accurate? Do error messages tell you what to do?
-- **Missing value** — what user problems does it not yet solve? What workflows are clunky?
-- **Reliability** — what happens on bad inputs, network failures, edge cases?
-- **Code quality** — types, tests, lint. But only after the above.
-
-Then form 2–4 recommendations spanning different dimensions — not just code quality. Example for a browser automation tool:
-
-```
-I looked at tiny-browser as a user would. Here's what I found:
-
-1. [Real-world correctness] nth selector returns wrong element on pages where the
-   first match is hidden — needs a test that actually runs the browser and verifies
-   the returned element is the visible one, not the first in the DOM.
-
-2. [Performance] Screenshots take ~3s on high-DPI displays due to a missing DPR
-   scale factor. Could be ~300ms. Has a test that catches this.
-
-3. [Usability] The README example uses a workflow that requires Chrome to already
-   be open, but there's no instruction for how to open it. First-time users fail here.
-
-4. [Value] There's no way to wait for a specific element to appear before interacting.
-   Most real workflows need this (page loads, AJAX). Would unlock a whole class of use cases.
-
-Which would you like me to tackle? Or do you have something else in mind?
+"log": [
+  "Attempt 1 [FAILED]: tried Cmd+A via CDP key events to select-all before typing. Modifier keypress doesn't trigger select-all in native inputs — CDP doesn't synthesize the right event. Approach abandoned.",
+  "Attempt 2 [PASS]: used Runtime.evaluate to call el.select() directly. Works on native inputs."
+]
 ```
 
-Wait for the user's answer, then call `harness open` with the chosen goal.
+Log the *specific reason* an approach failed, not just that it failed. Future sessions read this to avoid repeating dead ends.
 
-### Step 2 — Open an issue
+Before retrying, read the full log. Don't repeat failed approaches.
 
-After the user picks a goal, open a tracking issue with assertions. The **baseline** (current pass/fail) is automatically recorded in the issue body.
+### Step 4 — Verify
+
+Run each assertion in `HARNESS.json` via Shell. Check the exit code and output.
+
+If assertions pass: **also exercise the system live** — actually run it and confirm the behavior changed. Assertions passing is necessary but not sufficient. The ground truth is: does it work when you use it?
+
+If something fails, log the attempt (with the specific reason) and continue from Step 3.
+
+### Step 5 — Ship
+
+Once assertions pass and live verification confirms the fix:
 
 ```bash
-harness open "Add JSDoc to all public functions in src/api.ts" \
-  --repo owner/repo \
-  --workdir /path/to/repo \
-  --type fix \
-  --assert "npx tsc --noEmit" \
-  --assert "grep -rc '@param' src/api.ts"
-# → { number: "16", url: "..." }
-# Baseline is run automatically. If assertions already pass, a warning is printed
-# ("verify your goal isn't already complete"). Heed it.
+git add -A && git commit -m "fix: <description>"
+git push
 ```
 
-**Choosing `--type` wisely:**
-- `fix` — structural change; file/grep assertions are fine
-- `correctness` — must use **behavioral assertions** (run the actual system, check its output)
-- `performance` — must include a timing measurement assertion
-- `workflow` — end-to-end run + report file check
-- `spike` — exploration only; produces observations, not code. Use `harness log` to record findings.
-- `live` — assertions require a **running environment** (server, browser, device). harness check will remind you the system must be up. Use this for behavioral assertions that can't run headlessly.
+**Before deleting HARNESS.json, persist the assertions as guards.** Read `HARNESS_GUARDS.json` (create it if absent), append an entry, write it back:
 
-**The assertion hierarchy — behavioral first, structural as fallback:**
+```json
+[
+  {
+    "goal": "get_network timestamps use Unix ms not Chrome monotonic uptime",
+    "assertions": ["node tests/network_ts.mjs"]
+  }
+]
+```
 
-> The primary question is: *what assertion would you write if the system were running right now?*
-
-| Tier | Type | Example | Catches runtime bugs? |
-|------|------|---------|----------------------|
-| ✅ Best | Behavioral / live | start server → send real command → assert response | Yes |
-| ⚠️ Fallback | Structural | `grep`, `tsc`, `npm test`, `eslint` | No — only verifies code *looks* right |
-
-Structural assertions are valid CI fallbacks (they run without a live environment), but they should not be the *primary* correctness signal. If an issue is about behavior, there must be at least one behavioral assertion. Structural assertions alone mean "harness:succeeded" is theater.
-
-`harness open` always asks you the gold standard question after creating an issue. Answer it honestly — you have the full context of what the project does and what the assertions actually test. The answer is the difference between a regression manifest that catches real bugs and one that accumulates false confidence.
-
-**Fuzzy dedup warning:** If a similar open issue exists (>50% word overlap in title), harness prints a warning with the matching issue number. Review before proceeding.
-
-### Step 3 — Resume an in-progress issue
-
-Before touching code, always read the full history to avoid repeating failed attempts:
+Only include behavioral assertions in guards — structural checks like `tsc` add noise without catching real regressions. Then delete HARNESS.json and commit:
 
 ```bash
-harness context 14
-# → { goal, config (type + assertions + workdir), status, baseline, attempts: [...] }
+git rm HARNESS.json
+git add HARNESS_GUARDS.json
+git commit -m "chore: close task — <goal>"
+git push
 ```
 
-### Step 4 — Preflight: understand the project and gather context
-
-Before editing a single file:
-
-**Understand what the project does and how users use it:**
-```bash
-cat /path/to/repo/README.md          # what does this project do? who uses it?
-cat /path/to/repo/package.json       # what are the entry points and scripts?
-ls /path/to/repo/                    # what's the overall structure?
-```
-
-**Run the project as a real user would** — this is where the most valuable improvement ideas come from:
-```bash
-# For a CLI tool: actually run it
-cd /path/to/repo && node bin/cli.mjs --help
-cd /path/to/repo && node bin/cli.mjs <real command>
-
-# For a server: start it and exercise it
-cd /path/to/repo && npm start &
-curl http://localhost:3000/...
-
-# For a library: run the examples from the README
-```
-
-**Verify the assertions you plan to write will actually run:**
-```bash
-cd /path/to/repo && npx tsc --noEmit        # does tsc work at all?
-cd /path/to/repo && npm test                # does test suite pass currently?
-node -e "require('@eslint/js')" 2>&1        # are peer deps installed?
-```
-
-Common traps:
-- **Only reading source code** — the most important issues are usually only visible when you actually run the project. Read the code *and* run it.
-- **All-structural assertions on correctness goals** — if the goal is behavioural ("fix nth selector"), use a shell assertion that actually invokes the system and checks its output, not just `grep` on source code.
-- **Fragile assertions** — don't assert against a live server/port that isn't started by the assertion itself.
-- **Assertion gaming** — the baseline tells you what currently fails. If your change makes all assertions pass but the baseline showed them passing too, you changed nothing meaningful.
-- **Missing peer deps** — verify all tools are installed before writing assertions.
-- **Too-narrow `old_string` in edits** — include enough surrounding context to uniquely identify the replacement target.
-
-### Step 5 — Do the actual work
-
-Make the changes needed to satisfy the assertions. For `--type spike` issues, record observations with `harness observe` instead of writing code:
-
-```bash
-# mid-workflow: spotted a bug that's out of scope for the current issue
-harness observe "scroll fails on LinkedIn inner container — needs container targeting logic" --repo owner/repo
-# → creates harness:triage issue #28, continue current issue
-```
-
-### Step 6 — Verify with harness
-
-```bash
-harness check 16
-# ✅ shell: `npx tsc --noEmit`
-# ❌ shell: `grep -rc '@param' src/api.ts`
-#    reason: exit 1 (expected 0)
-#    stdout: src/api.ts:0
-# 1/2 assertions passed
-```
-
-Full `stdout`/`stderr` per assertion is included — no second round-trip needed.
-
-### Step 7 — Commit, push, then close
-
-Only close or fail an issue **after** the code is committed and pushed. `harness done` appends the assertions to `HARNESS_REGRESSION.json` — these run on every future `harness scan` to catch regressions.
-
-**Critical rule for `correctness` type issues:**
-
-> **`harness check` passing is not sufficient for a correctness goal. You must also verify the behavior in the live system before `harness done`.**
-
-Structural assertions (grep, file exists, tsc) only confirm the code *looks* right. For correctness goals the only ground truth is what actually happens when the system runs. This is true even if the fix is "obviously correct" and mirrors an existing pattern — especially then, because that confidence is what causes regressions to slip through.
-
-Before closing a `correctness` issue:
-1. `harness check <issue>` — structural assertions pass
-2. **Run the system live and exercise the changed behavior directly** — does it actually do the right thing?
-3. Only if step 2 passes: `git push && harness done`
-
-**All assertions pass (fix/code quality goal):**
-```bash
-harness log 16 "Added @param/@returns to 8 functions. tsc clean, grep confirms." \
-  --outcome pass --duration 180 --files src/api.ts
-git add -A && git commit -m "feat: add JSDoc to public functions in src/api.ts" && git push
-harness done 16 1
-```
-
-**All assertions pass (correctness goal — live verification required):**
-```bash
-harness check 16  # structural assertions pass
-
-# NOW verify in the live system:
-# e.g. for a Chrome extension: load it in Chrome and test the changed behavior manually
-# e.g. for a CLI: run it with real inputs and check the output
-# e.g. for a server: make a real request and inspect the response
-
-harness log 16 "Structural assertions pass. Verified live: list_tabs now returns correct window on lastFocusedWindow. Tested with Cursor open alongside Chrome." \
-  --outcome pass --duration 240 --files background.js
-git add -A && git commit -m "fix: list_tabs use lastFocusedWindow" && git push
-harness done 16 1
-```
-
-**Assertion failed — log and retry:**
-```bash
-harness log 16 "Attempt 1: 5/8 functions done. 3 still missing in lines 120–180." \
-  --outcome fail --duration 60 --files src/api.ts
-# fix the remaining 3, then re-check...
-harness check 16
-harness log 16 "Attempt 2: all 8 functions documented." --outcome pass --duration 45
-git add -A && git commit -m "feat: complete JSDoc coverage in src/api.ts" && git push
-harness done 16 2
-```
-
-**Genuinely blocked:**
-```bash
-harness log 16 "grep assertion impossible — file is auto-generated." --outcome blocked
-harness fail 16 3
-```
+Loop back to Step 1.
 
 ---
 
-## Assertion cheat sheet
+## If you're blocked
 
-> **Always ask first:** *"What assertion would I write if the system were running right now?"*
-> Behavioral assertions are the aspiration. Structural assertions are the CI fallback.
-
-### Tier 1: Behavioral / live (preferred for correctness, live, performance goals)
-
-These run the **actual system** — they can't be satisfied by restructuring source code alone.
-Use `--type live` when the environment must be running (browser, server, device).
-
-```json
-{ "type": "shell",
-  "command": "node bin/cli.mjs find_element '{\"selector\":\"button\",\"nth\":1}' | node -e \"const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); if(d.text==='A1') process.exit(1)\"",
-  "expect": { "exitCode": 0 } }
-
-{ "type": "shell",
-  "command": "npm start &>/tmp/server.log & sleep 2 && curl -sf http://localhost:3000/health && kill %1",
-  "expect": { "exitCode": 0 } }
-
-{ "type": "shell",
-  "command": "node bin/cli.mjs screenshot | node -e \"const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); if(!d.path) process.exit(1)\"",
-  "expect": { "exitCode": 0 } }
-```
-
-The pattern: **start system → exercise it → assert on observable output → stop system**.
-
-### Tier 2: Structural (acceptable for fix/code-quality goals; CI fallback for others)
-
-These verify code *looks* right, not that it *works*. Valid for `fix` goals or as a secondary
-signal alongside behavioral assertions. **Not sufficient alone for correctness or live goals.**
-
-```json
-{ "type": "shell", "command": "npx tsc --noEmit",     "expect": { "exitCode": 0 } }
-{ "type": "shell", "command": "npm test",              "expect": { "exitCode": 0 } }
-{ "type": "shell", "command": "cargo clippy",          "expect": { "exitCode": 0 } }
-{ "type": "shell", "command": "python -m pytest",      "expect": { "exitCode": 0 } }
-{ "type": "shell", "command": "go test ./...",         "expect": { "exitCode": 0 } }
-{ "type": "shell", "command": "grep -r 'TODO' src/",  "expect": { "exitCode": 1 } }
-{ "type": "file",  "path": "dist/index.js",           "expect": { "exists": true } }
-{ "type": "file",  "path": "src/utils.ts",            "expect": { "contains": "@returns" } }
-```
+If a goal is structurally impossible (wrong assertions, wrong approach, external blocker): log what you tried and why, then delete `HARNESS.json` and note the abandonment in the commit message. Don't update `HARNESS_GUARDS.json` — only guards that passed live verification belong there.
 
 ---
 
-## Tips for autonomous operation
+## Assertions reference
 
-- **`--repo` is optional inside a git repo** — harness reads `git remote get-url origin` automatically.
-- **Always push before closing** — `git push` first, then `harness done`. `done` writes to `HARNESS_REGRESSION.json`.
-- **`harness scan` always checks regressions first** — if a previously closed issue breaks, you'll see it before starting new work.
-- **Baseline on open is free insurance** — if all assertions pass at open time, either your goal is already done or your assertions don't actually test the right thing.
-- **Use `harness observe` mid-workflow** — when you spot a bug out of scope for the current issue, log it and keep going. Don't derail the active issue.
-- **Spike first for exploratory work** — `harness open --type spike` creates a no-assertion exploration issue. Record findings with `harness log`, then promote to fix/correctness issues.
-- **Structured log entries are queryable** — `--outcome`, `--duration`, and `--files` make history useful beyond reading it linearly.
-- **`harness context` before retrying** — always. Don't repeat failed approaches.
-- **One goal per issue, make it specific** — "Fix TypeScript error on line 42 of utils.ts" beats "Fix TypeScript".
-- **`harness fail` early** if the goal is structurally impossible — keeps the backlog clean.
+**The pattern: start system → exercise it → assert on observable output → stop system.**
+
+| Project type | Behavioral assertion pattern |
+|---|---|
+| CLI tool | `node bin/cli.mjs <cmd> \| node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));if(!d.field)process.exit(1)"` |
+| HTTP server | `npm start &>/tmp/s.log & sleep 2 && curl -sf http://localhost:3000/health && kill %1` |
+| Chrome extension | exercise via browser devtools / manual reload; document what was tested in the log since assertions can't run headlessly |
+| Library | `node -e "const lib=require('.');const r=lib.fn(input);if(r!==expected)process.exit(1)"` |
+| Structural fallback | `npx tsc --noEmit`, `npm test`, `cargo clippy`, `python -m pytest`, `go test ./...` |
+
+Structural assertions belong in `assertions` as a secondary signal. Only behavioral assertions belong in `HARNESS_GUARDS.json`.
